@@ -51,7 +51,7 @@ grails.project.dependency.resolution = {
         }
         compile 'org.eclipse.mylyn.docs:org.eclipse.mylyn.wikitext.core:2.8.0-SNAPSHOT' // Cannot use 2.9 or above because it is compiled with Java 8 so it won't work with Java 7
         compile 'org.eclipse.mylyn.docs:org.eclipse.mylyn.wikitext.textile.core:2.8.0-SNAPSHOT'
-        compile 'com.google.guava:guava:15.0' // For wikitext (was previously brought by asset-pipeline but they left the dependency: https://github.com/bertramdev/asset-pipeline/pull/117)
+        compile 'com.google.guava:guava:19.0' // For wikitext (was previously brought by asset-pipeline but they left the dependency: https://github.com/bertramdev/asset-pipeline/pull/117)
         compile 'org.liquibase:liquibase-core:2.0.5'
         compile "org.apache.poi:poi:3.17" // 4.0 works only with Java 8
         compile "org.apache.poi:poi-ooxml:3.17"
@@ -61,6 +61,7 @@ grails.project.dependency.resolution = {
         compile ':atmosphere-meteor:1.0.5'
         compile ':spring-security-core:2.0.0'
         compile ':spring-security-acl:2.0.1'
+        compile ':spring-security-oauth2-provider:2.0-RC5'
         compile ':hd-image-utils:1.1'
         compile 'org.icescrum:taggable:1.1.9'
         compile ':jdbc-pool:7.0.47'

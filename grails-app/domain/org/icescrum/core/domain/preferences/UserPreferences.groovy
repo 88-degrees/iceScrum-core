@@ -38,6 +38,9 @@ class UserPreferences implements Serializable {
     String emailsSettingsData //[onStory:['pkey','pkey2'...],onUrgentTask:['pkey','pkey2'...],autoFollow['pkey','pkey2'...]]
     String filterTask = "allTasks"
 
+    String colorScheme
+
+    Boolean needsEmailValidation = false
     Boolean displayReleaseNotes = false
     boolean displayWhatsNew = false
     boolean displayWelcomeTour = true
@@ -46,7 +49,6 @@ class UserPreferences implements Serializable {
     Date lastReadActivities = new Date()
 
     Map menu = ["project": "1", "backlog": "2", "planning": "3", "taskBoard": "4", "feature": "5"]
-    Map menuHidden = [:]
 
     static transients = ["emailsSettings"]
 
@@ -54,9 +56,10 @@ class UserPreferences implements Serializable {
         activity nullable: true
         lastProjectOpened nullable: true
         emailsSettingsData nullable: true
+        needsEmailValidation nullable: true
         displayReleaseNotes nullable: true
+        colorScheme nullable: true
     }
-
 
     static belongsTo = [
             user: User
@@ -104,7 +107,8 @@ class UserPreferences implements Serializable {
             builder.language(this.language)
             builder.activity(this.activity)
             builder.filterTask(this.filterTask)
-            builder.menuHidden(this.menuHidden)
+            builder.colorScheme(this.colorScheme)
+            builder.needsEmailValidation(this.needsEmailValidation)
             builder.displayReleaseNotes(this.displayReleaseNotes)
             builder.displayWhatsNew(this.displayWhatsNew)
             builder.lastProjectOpened(this.lastProjectOpened)

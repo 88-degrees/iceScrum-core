@@ -46,6 +46,7 @@ class TaskService extends IceScrumEventPublisher {
     def activityService
     def grailsApplication
     def attachmentableService
+    def commentService
 
     @PreAuthorize('(inProject(#task.backlog?.parentProject) or inProject(#task.parentStory?.backlog)) and (!archivedProject(#task.backlog?.parentProject) or !archivedProject(#task.parentStory?.backlog))')
     void save(Task task, User user) {
@@ -279,10 +280,9 @@ class TaskService extends IceScrumEventPublisher {
         }
         if (task.state == Task.STATE_DONE && task.doneDate && newState == Task.STATE_DONE) { // Move task from one story to another
             def story = task.type ? null : Story.get(task.parentStory?.id)
-            if (story && story.state == Story.STATE_DONE) {
+            if (task.isDirty('parentStory') && story && story.state == Story.STATE_DONE) {
                 throw new BusinessException(code: 'is.story.error.done', args: [project.getStoryStateNames()[Story.STATE_DONE]])
             }
-            task.doneDate = null
         } else {
             if (task.state == Task.STATE_DONE && newState != task.state && sprint && task.parentStory && task.parentStory.parentSprint != sprint) { // Task on Shifted story
                 throw new BusinessException(code: 'is.sprint.error.state.not.inProgress')
@@ -369,7 +369,7 @@ class TaskService extends IceScrumEventPublisher {
                     state: taskXml.state.text().toInteger(),
                     blocked: taskXml.blocked.text().toBoolean(),
                     uid: taskUid,
-                    color: taskXml.color.text())
+                    color: taskXml.color.text() != '#f9f157' ? taskXml.color.text() : '#ffcc01') // convert old yellow v7.39- in new yellow v7.40+
             if (project) {
                 task.creator = creator
                 project.addToTasks(task)
@@ -402,7 +402,7 @@ class TaskService extends IceScrumEventPublisher {
                     taskXml.comments.comment.each { _commentXml ->
                         def uid = options.userUIDByImportedID?."${_commentXml.posterId.text().toInteger()}" ?: null
                         User user = project.getUserByUidOrOwner(uid)
-                        ApplicationSupport.importComment(task, user, _commentXml.body.text(), DateUtils.parseDateFromExport(_commentXml.dateCreated.text()))
+                        commentService.importComment(task, user, _commentXml.body.text(), DateUtils.parseDateFromExport(_commentXml.dateCreated.text()))
                     }
                     task.comments_count = taskXml.comments.comment.size() ?: 0
                     taskXml.attachments.attachment.each { _attachmentXml ->

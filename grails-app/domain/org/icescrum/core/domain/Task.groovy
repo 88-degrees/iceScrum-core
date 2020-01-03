@@ -25,7 +25,7 @@
 
 package org.icescrum.core.domain
 
-import grails.util.GrailsNameUtils
+import grails.util.Holders
 import org.grails.comments.Comment
 import org.hibernate.ObjectNotFoundException
 
@@ -39,7 +39,7 @@ class Task extends BacklogElement implements Serializable {
     static final int TYPE_RECURRENT = 10
     static final int TYPE_URGENT = 11
 
-    String color = "#f9f157"
+    String color = "#ffcc01"
 
     Integer type
 
@@ -174,18 +174,6 @@ class Task extends BacklogElement implements Serializable {
                    WHERE t.parentProject.id = :pid""", [pid: pid])[0] ?: 0) + 1
     }
 
-    static findLastUpdatedComment(def element) {
-        executeQuery("SELECT c.lastUpdated " +
-                     "FROM org.grails.comments.Comment as c, org.grails.comments.CommentLink as cl, ${element.class.name} as b " +
-                     "WHERE c = cl.comment " +
-                     "AND cl.commentRef = b " +
-                     "AND cl.type = :type " +
-                     "AND b.id = :id " +
-                     "ORDER BY c.lastUpdated DESC",
-                [id: element.id, type: GrailsNameUtils.getPropertyName(element.class)],
-                [max: 1])[0]
-    }
-
     static Task withTask(long projectId, long id) {
         Task task = (Task) getInProject(projectId, id)
         if (!task) {
@@ -254,6 +242,10 @@ class Task extends BacklogElement implements Serializable {
 
     def getActivity() {
         return activities.sort { a, b -> b.dateCreated <=> a.dateCreated }
+    }
+
+    String getPermalink() {
+        return Holders.grailsApplication.config.icescrum.serverURL + '/p/' + this.parentProject.pkey + '-T' + this.uid
     }
 
     static search(project, options, rowCount = false) {

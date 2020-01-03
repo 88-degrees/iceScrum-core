@@ -62,7 +62,7 @@ class PushService {
                     if (log.debugEnabled) {
                         log.debug("Broadcast to everybody on channel $channel - $namespace - $eventType")
                     }
-                    broadcaster.broadcast(buildMessage(namespace, eventType, object).content)
+                    broadcaster.broadcast(buildMessage(namespace, eventType, object) as JSON)
                 }
             } else {
                 if (log.debugEnabled) {
@@ -85,7 +85,7 @@ class PushService {
                     if (log.debugEnabled) {
                         log.debug('Broadcast to ' + resources*.uuid().join(', ') + ' on channel ' + channel)
                     }
-                    broadcaster.broadcast(buildMessage(namespace, eventType, object).content, resources)
+                    broadcaster.broadcast(buildMessage(namespace, eventType, object) as JSON, resources)
                 }
             } catch (Exception e) {
                 // Request object no longer valid.  This object has been cancelled, see https://github.com/Atmosphere/atmosphere/issues/1052
@@ -149,7 +149,7 @@ class PushService {
                     if (log.debugEnabled) {
                         log.debug("broadcast " + messages.size() + " buffered messages on channel $channel")
                     }
-                    broadcaster.broadcast(messages.collect({ it.content }).join(BUFFER_MESSAGE_DELIMITER))
+                    broadcaster.broadcast(messages.collect({ it as JSON }).join(BUFFER_MESSAGE_DELIMITER))
                 }
             }
         }
@@ -163,10 +163,16 @@ class PushService {
         return GrailsNameUtils.getShortName(domain.class).toLowerCase()
     }
 
+    public static generatedMessageId(object, eventType) {
+        return object instanceof Map && object.messageId ? object.messageId : (object.class ? getNamespaceFromDomain(object) : UUID.randomUUID().toString()) + '-' + eventType + '-' + object.id
+    }
+
     public static def buildMessage(String namespace, String eventType, object) {
-        def messageId = object instanceof Map ? object.messageId : namespace + '-' + eventType + '-' + object.id
-        def message = [messageId: messageId, namespace: namespace, eventType: eventType, object: object]
-        message.content = (message as JSON).toString() // toString() required to serialize eagerly (otherwise error because no session in atmosphere thread)
+        def message = [
+                messageId: generatedMessageId(object, eventType),
+                namespace: namespace,
+                content  : (object as JSON).toString().encodeAsBase64(),
+                eventType: eventType]
         return message
     }
 }

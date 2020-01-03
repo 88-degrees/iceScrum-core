@@ -47,11 +47,15 @@ class BootStrapService {
         ApplicationSupport.checkInitialConfig(config)
         ApplicationSupport.generateFolders(config)
 
-        if (!dev) {
-            ApplicationSupport.checkForUpdateAndReportUsage(config)
+        config.icescrum.beta.features.each { feature ->
+            ApplicationSupport.addToBetaFeatures(feature, false)
         }
 
         config.icescrum.serverURL = ApplicationSupport.removeTrailingSlash(config.icescrum.serverURL)
+
+        if (!dev) {
+            ApplicationSupport.checkForUpdateAndReportUsage(config)
+        }
 
         config.grails.attachmentable.baseDir = config.icescrum.baseDir.toString()
         config.grails.mail.default.from = config.icescrum.alerts.default.from

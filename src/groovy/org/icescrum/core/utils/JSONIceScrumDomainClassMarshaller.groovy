@@ -68,11 +68,10 @@ public class JSONIceScrumDomainClassMarshaller extends DomainClassMarshaller {
         writer.key('class').value(GrailsNameUtils.getShortName(domainClass.clazz.name))
         json.property('id', extractValue(value, domainClass.identifier))
 
-        List<GrailsDomainClassProperty> properties
+        List<GrailsDomainClassProperty> properties = domainClass.persistentProperties.toList()
         if (requestConfig?.excludeAll) {
-            properties = []
+            properties = requestConfig?.dontExclude ? properties.findAll { requestConfig.dontExclude.contains(it.name) } : []
         } else {
-            properties = domainClass.persistentProperties.toList()
             def excludes = []
             if (config.exclude) {
                 excludes.addAll(config.exclude)
@@ -122,7 +121,10 @@ public class JSONIceScrumDomainClassMarshaller extends DomainClassMarshaller {
 
     private void marshallProperty(property, beanWrapper, writer, json, domainClass, config, requestConfig) {
         Object propertyValue = beanWrapper.getPropertyValue(property.name)
-        if (!property.isAssociation()) {
+        if (property.type.isEnum()) {
+            writer.key(property.name)
+            json.convertAnother(propertyValue.toString())
+        } else if (!property.isAssociation()) {
             writer.key(property.name)
             json.convertAnother(propertyValue)
         } else if (propertyValue == null) {

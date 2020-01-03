@@ -44,20 +44,18 @@ class WindowTagLib {
         if (attrs.form) {
             out << "<form role='form' $validation $name ng-submit='${attrs.form}' ${attrs.autoFillFix ? 'form-autofill-fix' : ''} novalidate>"
         }
+        if (attrs.header != false)
         out << """  <div class="modal-header">
-                        <button type="button" class="close" ng-click="\$dismiss()" tabindex="-1" aria-hidden="true">&times;</button>
-                        <h4 class="modal-title" id="modal${attrs.name ?: ''}">${attrs.icon ? '<i class="fa fa-' + attrs.icon + '"></i> ' : ''}${attrs.title}</h4>
-                    </div>
-                    <div class="modal-body">
+                        <h4 class="modal-title" id="modal${attrs.name ?: ''}">${attrs.icon ? '<i class="' + attrs.icon + '"></i> ' : ''}${attrs.title}</h4>
+                        <button type="button" class="close" ng-click="\$dismiss()" tabindex="-1" aria-hidden="true"></button>
+                    </div>"""
+        out << """  <div class="modal-body">
                         ${body()}"""
-        if (attrs.form) {
-            out << '<div class="alert alert-danger"></div>'
-        }
         out << "</div>"
         if (attrs.footer != false) {
             out << """<div class="modal-footer">"""
             def closeButton = attrs.closeButton ?: message(code: 'is.dialog.close')
-            out << """  <button type="button" class="btn btn-default" ng-click="\$close()">$closeButton</button>"""
+            out << """  <button type="button" class="btn btn-secondary" ng-click="\$close()">$closeButton</button>"""
             if (attrs.button) {
                 attrs.button.each { button ->
                     out << "<button type='${button.type ?: 'button'}' " +

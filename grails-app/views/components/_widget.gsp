@@ -17,13 +17,13 @@
   - along with iceScrum.  If not, see <http://www.gnu.org/licenses/>.
   --}%
 %{-- widget --}%
-<div class="panel panel-light" ${widgetDefinition.ngController ? 'ng-controller="' + widgetDefinition.ngController + '"' : ''}>
-    <div class="panel-heading clearfix" as-sortable-item-handle>
-        <h3 class="panel-title">
-            <i class="fa fa-${widgetDefinition.icon} pull-left"></i>&nbsp;<g:message code="${widgetDefinition.title}"/>
-            <div class="btn-settings btn-group visible-on-hover">
+<div class="card hover-container" ${widgetDefinition.ngController ? 'ng-controller="' + widgetDefinition.ngController + '"' : ''}>
+    <h3 class="card-header d-flex justify-content-between" as-sortable-item-handle>
+        <span>${message(code: widgetDefinition.title)}</span>
+        <div class="d-flex">
+            <span class="hover-display">
                 <g:if test="${widget && widgetDefinition.settings}">
-                    <button class="btn btn-default btn-sm"
+                    <button class="btn btn-link btn-sm"
                             ng-if="authorizedWidget('update', widget)"
                             ng-click="toggleSettings(widget)"
                             defer-tooltip="${message(code: 'todo.is.ui.setting')}">
@@ -31,34 +31,31 @@
                     </button>
                 </g:if>
                 <g:if test="${widget && widgetDefinition.allowRemove}">
-                    <button class="btn btn-default btn-sm"
+                    <button class="btn btn-link btn-sm"
                             ng-if="authorizedWidget('delete', widget)"
                             ng-click="delete(widget)"
                             defer-tooltip="${message(code: 'is.ui.widget.remove')}">
                         <i class="fa fa-times"></i>
                     </button>
                 </g:if>
-            </div>
-        </h3>
-    </div>
-    <div class="panel-body"
-        ${widgetDefinition.settings ? 'ng-switch="showSettings"' : ''}
-         ng-class="showSettings ? 'widget-settings' : 'widget-content'">
+            </span>
+        </div>
+    </h3>
+    <div class="card-body" ${widgetDefinition.settings ? 'ng-switch="showSettings"' : ''}>
         ${widgetDefinition.settings ? '<div ng-switch-default>' : ''}
         ${content}
         ${widgetDefinition.settings ? '</div>' : ''}
         <g:if test="${widgetDefinition.settings}">
             <form ng-switch-when="true"
                   ng-if="authorizedWidget('update', widget)"
-                  ng-submit="update(widget)"
-                  class="form-horizontal">
-                <g:render template="/widgets/${widgetDefinition.id}/settings" plugin="${widgetDefinition.pluginName}"/>
+                  ng-submit="update(widget)">
+                <g:render template="/widgets/${widgetDefinition.templateFolder}/settings" plugin="${widgetDefinition.pluginName}"/>
             </form>
         </g:if>
     </div>
     <g:if test="${widgetDefinition.footer}">
-        <div class="panel-footer">
-            <g:render template="/${widgetDefinition.id}/widget/footer" plugin="${widgetDefinition.pluginName}"/>
+        <div class="card-footer">
+            <g:render template="/${widgetDefinition.templateFolder}/widget/footer" plugin="${widgetDefinition.pluginName}"/>
         </div>
     </g:if>
 </div>

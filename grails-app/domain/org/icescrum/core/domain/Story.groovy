@@ -25,7 +25,7 @@
 
 package org.icescrum.core.domain
 
-import grails.util.GrailsNameUtils
+import grails.util.Holders
 import org.grails.comments.Comment
 import org.hibernate.ObjectNotFoundException
 import org.icescrum.core.domain.AcceptanceTest.AcceptanceTestState
@@ -105,7 +105,15 @@ class Story extends BacklogElement implements Cloneable, Serializable {
         inReviewDate(nullable: true)
         doneDate(nullable: true)
         parentSprint(nullable: true, validator: { newSprint, story -> newSprint == null || newSprint.parentProject.id == story.backlog.id ?: 'invalid' })
-        feature(nullable: true, validator: { newFeature, story -> newFeature == null || newFeature.backlog.id == story.backlog.id ?: 'invalid' })
+        feature(nullable: true, validator: { newFeature, story ->
+            if (newFeature != null) {
+                if (newFeature.backlog.id != story.backlog.id) {
+                    return 'invalid'
+                } else if (newFeature.state == Feature.STATE_DONE && story.state != STATE_DONE) {
+                    return 'is.story.error.feature'
+                }
+            }
+        })
         actors(nullable: true)
         affectVersion(nullable: true)
         effort(nullable: true, validator: { newEffort, story -> newEffort == null || (newEffort >= 0 && newEffort < 1000) ?: 'invalid' })
@@ -140,6 +148,10 @@ class Story extends BacklogElement implements Cloneable, Serializable {
     Map getProject() { // Hack because by default it does not return the asShort but a timebox instead
         Project project = (Project) backlog
         return project ? [class: 'Project', id: project.id, pkey: project.pkey, name: project.name] : [:]
+    }
+
+    String getPermalink() {
+        return Holders.grailsApplication.config.icescrum.serverURL + '/p/' + backlog.pkey + '-' + this.uid
     }
 
     List<Story> getSameBacklogStories() {
@@ -292,18 +304,6 @@ class Story extends BacklogElement implements Cloneable, Serializable {
                    FROM org.icescrum.core.domain.Story as s, org.icescrum.core.domain.Project as p
                    WHERE s.backlog = p
                    AND p.id = :pid """, [pid: pid], [readOnly: true])[0] ?: 0) + 1
-    }
-
-    static findLastUpdatedComment(def element) {
-        executeQuery("SELECT c.lastUpdated " +
-                     "FROM org.grails.comments.Comment as c, org.grails.comments.CommentLink as cl, ${element.class.name} as b " +
-                     "WHERE c = cl.comment " +
-                     "AND cl.commentRef = b " +
-                     "AND cl.type = :type " +
-                     "AND b.id = :id " +
-                     "ORDER BY c.lastUpdated DESC",
-                [id: element.id, type: GrailsNameUtils.getPropertyName(element.class)],
-                [max: 1, readOnly: true])[0]
     }
 
     static List<Comment> recentCommentsInProject(long projectId) {

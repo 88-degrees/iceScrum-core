@@ -24,7 +24,6 @@
 package org.icescrum.core.support
 
 import grails.converters.JSON
-import grails.plugin.springsecurity.userdetails.GrailsUser
 import grails.plugin.springsecurity.web.SecurityRequestHolder as SRH
 import grails.util.Environment
 import grails.util.GrailsNameUtils
@@ -53,24 +52,22 @@ import org.apache.http.util.EntityUtils
 import org.codehaus.groovy.grails.web.servlet.GrailsApplicationAttributes
 import org.codehaus.groovy.grails.web.servlet.mvc.GrailsWebRequest
 import org.codehaus.groovy.grails.web.util.WebUtils
-import org.grails.comments.Comment
-import org.grails.comments.CommentLink
 import org.icescrum.core.app.AppDefinition
 import org.icescrum.core.domain.*
-import org.icescrum.core.domain.preferences.UserPreferences
 import org.icescrum.core.domain.security.Authority
 import org.icescrum.core.domain.security.UserAuthority
 import org.icescrum.core.error.BusinessException
 import org.icescrum.core.security.WebScrumExpressionHandler
 import org.icescrum.core.services.ProjectService
 import org.icescrum.core.utils.DateUtils
-import org.icescrum.core.utils.ServicesUtils
 import org.icescrum.plugins.attachmentable.domain.Attachment
 import org.springframework.expression.Expression
 import org.springframework.security.access.expression.ExpressionUtils
 import org.springframework.security.core.context.SecurityContextHolder as SCH
 import org.springframework.security.web.FilterInvocation
 
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import javax.imageio.ImageIO
 import javax.servlet.FilterChain
 import javax.servlet.http.HttpServletRequest
@@ -80,6 +77,7 @@ import java.awt.Graphics2D
 import java.awt.RenderingHints
 import java.awt.image.BufferedImage
 import java.security.MessageDigest
+import java.security.SignatureException
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -155,6 +153,24 @@ class ApplicationSupport {
         return mySQLUTF8mb4
     }
 
+    static boolean betaFeatureEnabled(name) {
+        Holders.grailsApplication.config.icescrum.beta?."${name}"?.enable ?: false
+    }
+
+    static boolean addToBetaFeatures(name, enabledByDefault = false) {
+        if (!Holders.grailsApplication.config.publicSettings.beta) {
+            Holders.grailsApplication.config.publicSettings.beta = [
+                    [key: 'icescrum.beta.enable', type: 'checkbox', jsIf: 'false' /* fake hidden */],
+            ]
+        }
+        if (!Holders.grailsApplication.config.publicSettings.beta.find { it.key == "icescrum.beta.${name}.enable".toString() }) {
+            Holders.grailsApplication.config.publicSettings.beta << [key: "icescrum.beta.${name}.enable".toString(), type: 'checkbox']
+        }
+        if (!(Holders.grailsApplication.config.icescrum.beta."${name}"?.enable instanceof Boolean)) {
+            Holders.grailsApplication.config.icescrum.beta."${name}".enable = enabledByDefault
+        }
+    }
+
     static boolean isUTF8Database() {
         def driverClassName = Holders.grailsApplication.config.dataSource.driverClassName
         def disabled = driverClassName == 'com.mysql.jdbc.Driver' && !isMySQLUTF8mb4() || driverClassName == 'com.microsoft.sqlserver.jdbc.SQLServerDriver'
@@ -198,26 +214,6 @@ class ApplicationSupport {
             return secured
         }
         return false
-    }
-
-    static Map menuPositionFromUserPreferences(windowDefinition) {
-        UserPreferences userPreferences = null
-        if (GrailsUser.isAssignableFrom(SCH.context.authentication?.principal?.getClass())) {
-            userPreferences = User.get(SCH.context.authentication.principal?.id)?.preferences
-        }
-        def visiblePosition = userPreferences?.menu?.getAt(windowDefinition.id)
-        def hiddenPosition = userPreferences?.menuHidden?.getAt(windowDefinition.id)
-        def menuEntry = [:]
-        if (visiblePosition) {
-            menuEntry.pos = visiblePosition
-            menuEntry.visible = true
-        } else if (hiddenPosition) {
-            menuEntry.pos = hiddenPosition
-            menuEntry.visible = false
-        } else {
-            menuEntry = null
-        }
-        return menuEntry
     }
 
     static public checkInitialConfig = { config ->
@@ -475,7 +471,6 @@ class ApplicationSupport {
             def object = params.long("${workspaceName}") ? workspace.objectClass.get(params.long("${workspaceName}")) : null
             return object ? [name        : workspaceName,
                              object      : object,
-                             icon        : workspace.icon,
                              config      : workspace.config(object),
                              params      : workspace.params(object),
                              enabled     : workspace.enabled(Holders.grailsApplication),
@@ -483,7 +478,7 @@ class ApplicationSupport {
         }
     }
 
-    static HttpClient getHttpClient(){
+    static HttpClient getHttpClient() {
         return new SystemDefaultHttpClient()
     }
 
@@ -532,8 +527,12 @@ class ApplicationSupport {
                 log.debug('Error ' + resp.status + ' get ' + uri.toString() + ' ' + responseText)
             }
         } catch (Exception e) {
-            log.error(e.message)
-            e.printStackTrace()
+            if (log.debugEnabled) {
+                e.printStackTrace()
+            }
+            if (log.errorEnabled) {
+                log.error(e.message)
+            }
         } finally {
             httpClient.connectionManager.shutdown()
         }
@@ -706,14 +705,6 @@ class ApplicationSupport {
         return lastWarning ? [id: lastWarning.id, icon: lastWarning.icon, title: i18nService.message(lastWarning.title), message: i18nService.message(lastWarning.message), hideable: lastWarning.hideable, silent: lastWarning.silent] : null
     }
 
-    static void importComment(object, User poster, String body, Date dateCreated) {
-        def comment = new Comment(body: body, posterId: poster.id, posterClass: getUnproxiedClassName(poster.class.name))
-        comment.save()
-        def link = new CommentLink(comment: comment, commentRef: object.id, type: GrailsNameUtils.getPropertyName(object.class))
-        link.save()
-        comment.dateCreated = dateCreated
-    }
-
     static String getUnproxiedClassName(String className) {
         def i = className.indexOf('_$$_javassist')
         return i > -1 ? className[0..i - 1] : className
@@ -837,28 +828,25 @@ class ApplicationSupport {
         }
     }
 
-    static Map getRenderableComment(Comment comment, Object commentable = null) {
-        def commentLink = commentable ? [commentRef: commentable.id, type: getUnproxiedClassName(GrailsNameUtils.getPropertyName(commentable.class))] : CommentLink.findByComment(comment)
-        return [
-                class      : 'Comment',
-                id         : comment.id,
-                body       : comment.body,
-                body_html  : ServicesUtils.textileToHtml(comment.body),
-                poster     : comment.poster,
-                dateCreated: comment.dateCreated,
-                lastUpdated: comment.lastUpdated,
-                commentable: [
-                        class: commentLink.type.capitalize(),
-                        id   : commentLink.commentRef
-                ]
-        ]
-    }
-
     static void validateHexdecimalColor(color) {
         // Do it here rather than in domain because we don't want to break projects with existing malformed color
         if (color && !(color.toLowerCase() ==~ /^#[0-9a-f]{6}$/)) {
             throw new BusinessException(code: 'is.ui.color.error')
         }
+    }
+
+    static String hmac(String text, String secret) {
+        String result
+        try {
+            SecretKeySpec signingKey = new SecretKeySpec(secret.getBytes(), "HmacSHA1")
+            Mac mac = Mac.getInstance("HmacSHA1")
+            mac.init(signingKey)
+            byte[] rawHmac = mac.doFinal(text.getBytes())
+            result = rawHmac.encodeHex()
+        } catch (Exception e) {
+            throw new SignatureException("Failed to generate HMAC : " + e.getMessage())
+        }
+        return result
     }
 }
 

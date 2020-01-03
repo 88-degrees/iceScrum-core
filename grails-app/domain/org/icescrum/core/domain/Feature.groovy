@@ -25,6 +25,8 @@
 
 package org.icescrum.core.domain
 
+import grails.util.Holders
+import org.grails.comments.Comment
 import org.hibernate.ObjectNotFoundException
 
 class Feature extends BacklogElement implements Serializable {
@@ -36,13 +38,14 @@ class Feature extends BacklogElement implements Serializable {
     static final int STATE_BUSY = 1
     static final int STATE_DONE = 2
 
-    String color = "#2d8ccc" // Blue by default
+    String color = "#0067e8"
 
     Integer value = null
+    Date doneDate
     int type = Feature.TYPE_FUNCTIONAL
     int rank
 
-    static transients = ['countDoneStories', 'state', 'effort', 'inProgressDate', 'doneDate', 'project']
+    static transients = ['countDoneStories', 'state', 'effort', 'inProgressDate', 'project', 'actualReleases']
 
     static belongsTo = [
             parentRelease: Release
@@ -65,6 +68,7 @@ class Feature extends BacklogElement implements Serializable {
         name(unique: 'backlog')
         parentRelease(nullable: true)
         value(nullable: true)
+        doneDate(nullable: true)
     }
 
     static namedQueries = {
@@ -78,6 +82,17 @@ class Feature extends BacklogElement implements Serializable {
             }
             uniqueResult = true
         }
+    }
+
+    static List<Comment> recentCommentsInProject(long projectId) {
+        return executeQuery(""" 
+                SELECT commentLink.comment 
+                FROM Feature feature, CommentLink as commentLink 
+                WHERE feature.parentProject.id = :projectId 
+                AND commentLink.commentRef = feature.id 
+                AND commentLink.type = 'feature'
+                ORDER BY commentLink.comment.dateCreated DESC""", [projectId: projectId], [max: 10, offset: 0, cache: true, readOnly: true]
+        )
     }
 
     static Feature withFeature(long projectId, long id) {
@@ -146,13 +161,12 @@ class Feature extends BacklogElement implements Serializable {
     }
 
     def getState() {
-        if (!stories || stories.find { it.state > Story.STATE_PLANNED } == null) {
-            return STATE_WAIT
-        }
-        if (stories.collect { it.state }.count(Story.STATE_DONE) == stories.size()) {
+        if (doneDate) {
             return STATE_DONE
-        } else {
+        } else if (stories && stories.find { it.state > Story.STATE_PLANNED }) {
             return STATE_BUSY
+        } else {
+            return STATE_WAIT
         }
     }
 
@@ -164,18 +178,35 @@ class Feature extends BacklogElement implements Serializable {
         return state > STATE_WAIT ? stories.collect { it.inProgressDate }.findAll { it != null }.sort().last() : null
     }
 
-    Date getDoneDate() {
-        return state == STATE_DONE ? stories.collect { it.doneDate }.findAll { it != null }.sort().first() : null
-    }
-
     def getActivity() {
         def activities = stories*.activities.flatten().findAll { Activity a -> a.important && a.code != Activity.CODE_SAVE }
         return activities.sort { Activity a, Activity b -> b.dateCreated <=> a.dateCreated }
     }
 
+    List<Map> getActualReleases() {
+        executeQuery(""" 
+                SELECT release.id, release.name, release.state, release.orderNumber
+                FROM Release release
+                WHERE release.id IN (
+                    SELECT DISTINCT release2.id
+                    FROM Release release2, Story story, Sprint sprint
+                    WHERE story.feature.id = :featureId
+                    AND story.parentSprint.id = sprint.id
+                    AND sprint.parentRelease.id = release2.id
+                )
+                ORDER BY release.orderNumber""", [featureId: id], [cache: true, readOnly: true]
+        ).collect { columns ->
+            [id: columns[0], name: columns[1], state: columns[2], orderNumber: columns[3]]
+        }
+    }
+
     Map getProject() { // Hack because by default it does not return the asShort but a timebox instead
         Project project = (Project) backlog
         return project ? [class: 'Project', id: project.id, pkey: project.pkey, name: project.name] : [:]
+    }
+
+    String getPermalink() {
+        return Holders.grailsApplication.config.icescrum.serverURL + '/p/' + backlog.pkey + '-F' + this.uid
     }
 
     static search(project, options) {
@@ -222,6 +253,7 @@ class Feature extends BacklogElement implements Serializable {
             builder.color(this.color)
             builder.value(this.value ?: '')
             builder.todoDate(this.todoDate)
+            builder.doneDate(this.doneDate)
             builder.tags { builder.mkp.yieldUnescaped("<![CDATA[${this.tags}]]>") }
             builder.name { builder.mkp.yieldUnescaped("<![CDATA[${this.name}]]>") }
             builder.notes { builder.mkp.yieldUnescaped("<![CDATA[${this.notes ?: ''}]]>") }
@@ -229,6 +261,16 @@ class Feature extends BacklogElement implements Serializable {
             builder.stories() {
                 this.stories.sort { it.uid }.each { _story ->
                     story(uid: _story.uid)
+                }
+            }
+            builder.comments() {
+                this.comments.each { _comment ->
+                    builder.comment() {
+                        builder.dateCreated(_comment.dateCreated)
+                        builder.posterId(_comment.posterId)
+                        builder.posterClass(_comment.posterClass)
+                        builder.body { builder.mkp.yieldUnescaped("<![CDATA[${_comment.body}]]>") }
+                    }
                 }
             }
             builder.activities() {

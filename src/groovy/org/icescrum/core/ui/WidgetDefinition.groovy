@@ -40,14 +40,15 @@ class WidgetDefinition {
 
     String id
     String name
+    String i18n = ''
     String help = ''
-    String icon = ''
     String title = ''
     String workspace = null
     String description = ''
     String pluginName = null
     String templatePath = null
     String ngController = null
+    String templateFolder = null
     String secured = 'permitAll()'
 
     Closure onSave = { def widget -> }
@@ -61,15 +62,10 @@ class WidgetDefinition {
         this.id = id
         this.disabled = disabled
         this.pluginName = pluginName
-        this.name = "is.ui.widget.${id}.name"
-        this.help = "is.ui.widget.${id}.help"
-        this.description = "is.ui.widget.${id}.description"
-
-        this.title = this.name
     }
 
-    void icon(String icon) {
-        this.icon = icon
+    void i18n(int i18n) {
+        this.i18n = i18n
     }
 
     void title(String title) {
@@ -116,8 +112,19 @@ class WidgetDefinition {
         this.templatePath = templatePath
     }
 
+    void templateFolder(String templateFolder) {
+        this.templateFolder = templateFolder
+    }
+
     void allowDuplicate(boolean allowDuplicate) {
         this.allowDuplicate = allowDuplicate
+    }
+
+    void setupI18n() {
+        this.name = "is.ui.widget.${i18n ?: id}.name"
+        this.help = "is.ui.widget.${i18n ?: id}.help"
+        this.description = "is.ui.widget.${i18n ?: id}.description"
+        this.title = this.title ?: this.name
     }
 
     def methodMissing(String name, args) {

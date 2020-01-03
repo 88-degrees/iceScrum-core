@@ -57,6 +57,7 @@ class StoryService extends IceScrumEventPublisher {
     def activityService
     def pushService
     def i18nService
+    def commentService
 
     @PreAuthorize('isAuthenticated() and !archivedProject(#project)')
     void save(Story story, Project project, User user) {
@@ -115,7 +116,6 @@ class StoryService extends IceScrumEventPublisher {
                 it.save()
             }
             resetRank(story)
-            story.deleteComments()
             story.description = reason ?: null
 
             story.delete()
@@ -423,6 +423,41 @@ class StoryService extends IceScrumEventPublisher {
         cleanRanks(stories)
     }
 
+    // TODO check rights
+    void shiftRankInList(List<Story> stories, Story story, Integer newIndex) {
+        def oldRank = story.rank
+        def oldIndex = stories.indexOf(story)
+        stories.remove(oldIndex)
+        stories.add(newIndex, story)
+        if (oldIndex > newIndex) {
+            for (int i = newIndex; i <= oldIndex; i++) {
+                def _story = stories.get(i)
+                def newRank = (i == oldIndex) ? oldRank : stories.get(i + 1).rank
+                if (newRank == adjustRankAccordingToDependences(_story, newRank)) {
+                    _story.rank = newRank
+                    def dirtyProperties = publishSynchronousEvent(IceScrumEventType.BEFORE_UPDATE, _story)
+                    _story.save()
+                    publishSynchronousEvent(IceScrumEventType.UPDATE, _story, dirtyProperties)
+                } else {
+                    throw new BusinessException(code: 'is.story.error.shift.rank.has.dependences', args: [_story.name])
+                }
+            }
+        } else {
+            for (int i = newIndex; i >= oldIndex; i--) {
+                def _story = stories.get(i)
+                def newRank = (i == oldIndex) ? oldRank : stories.get(i - 1).rank
+                if (newRank == adjustRankAccordingToDependences(_story, newRank)) {
+                    _story.rank = newRank
+                    def dirtyProperties = publishSynchronousEvent(IceScrumEventType.BEFORE_UPDATE, _story)
+                    _story.save()
+                    publishSynchronousEvent(IceScrumEventType.UPDATE, _story, dirtyProperties)
+                } else {
+                    throw new BusinessException(code: 'is.story.error.shift.rank.has.dependences', args: [_story.name])
+                }
+            }
+        }
+    }
+
     @PreAuthorize('productOwner(#story.backlog) and !archivedProject(#story.backlog)')
     def acceptToBacklog(Story story, Long newRank = null) {
         Project project = (Project) story.backlog
@@ -497,6 +532,14 @@ class StoryService extends IceScrumEventPublisher {
             story.attachments.each { attachment ->
                 feature.addAttachment(story.creator, attachmentableService.getFile(attachment), attachment.filename)
             }
+            story.comments.each { Comment comment ->
+                def commentLink = CommentLink.findByComment(comment)
+                if (commentLink) {
+                    commentLink.commentRef = feature.id
+                    commentLink.type = GrailsNameUtils.getPropertyName(feature.class)
+                    commentLink.save()
+                }
+            }
             feature.tags = story.tags
             delete([story], feature)
             features << feature
@@ -564,7 +607,8 @@ class StoryService extends IceScrumEventPublisher {
 
     @PreAuthorize('(productOwner(#stories[0].backlog) or scrumMaster(#stories[0].backlog)) and !archivedProject(#stories[0].backlog)')
     void done(List<Story> stories) {
-        def storyStateNames = ((Project) stories[0].backlog).getStoryStateNames()
+        Project project = (Project) stories[0].backlog
+        def storyStateNames = project.getStoryStateNames()
         stories.sort { it.rank }.each { story ->
             if (story.parentSprint?.state != Sprint.STATE_INPROGRESS) {
                 throw new BusinessException(code: 'is.story.error.markAsDone.not.inProgress', args: [storyStateNames[Story.STATE_DONE]])
@@ -586,6 +630,10 @@ class StoryService extends IceScrumEventPublisher {
                 taskService.update(t, user, false, [state: Task.STATE_DONE])
             }
             pushService.enablePushForThisThread()
+            Feature feature = story.feature
+            if (feature && project.preferences.autoDoneFeature && !feature.stories.any { Story s -> s.state != Story.STATE_DONE } && feature.state != Feature.STATE_DONE) {
+                featureService.update(feature, [state: Feature.STATE_DONE])
+            }
             story.acceptanceTests.each { AcceptanceTest acceptanceTest ->
                 if (acceptanceTest.stateEnum != AcceptanceTestState.SUCCESS) {
                     acceptanceTest.stateEnum = AcceptanceTestState.SUCCESS
@@ -809,7 +857,7 @@ class StoryService extends IceScrumEventPublisher {
                     storyXml.comments.comment.each { _commentXml ->
                         def uid = options.userUIDByImportedID?."${_commentXml.posterId.text().toInteger()}" ?: null
                         User user = project.getUserByUidOrOwner(uid)
-                        ApplicationSupport.importComment(story, user, _commentXml.body.text(), DateUtils.parseDateFromExport(_commentXml.dateCreated.text()))
+                        commentService.importComment(story, user, _commentXml.body.text(), DateUtils.parseDateFromExport(_commentXml.dateCreated.text()))
                     }
                     story.comments_count = storyXml.comments.comment.size() ?: 0
                     storyXml.attachments.attachment.each { _attachmentXml ->
@@ -864,7 +912,7 @@ class StoryService extends IceScrumEventPublisher {
         story.actors = actorSet
     }
 
-    private Long adjustRankAccordingToDependences(story, Long rank) {
+    private static Long adjustRankAccordingToDependences(story, Long rank) {
         def sameBacklogStories = story.sameBacklogStories
         if (story.dependsOn && (story.dependsOn in sameBacklogStories) && rank <= story.dependsOn.rank) {
             rank = story.dependsOn.rank + 1
