@@ -58,6 +58,7 @@ class StoryService extends IceScrumEventPublisher {
     def pushService
     def i18nService
     def commentService
+    def grailsApplication
 
     @PreAuthorize('isAuthenticated() and !archivedProject(#project)')
     void save(Story story, Project project, User user) {
@@ -78,7 +79,8 @@ class StoryService extends IceScrumEventPublisher {
         }.each {
             story.addToFollowers(user)
         }
-        def rank = story.sameBacklogStories ? story.sameBacklogStories.max { it.rank }.rank + 1 : 1
+        def sameBacklogStories = story.sameBacklogStories
+        def rank = sameBacklogStories ? sameBacklogStories.max { it.rank }.rank + 1 : 1
         setRank(story, rank)
         publishSynchronousEvent(IceScrumEventType.BEFORE_CREATE, story)
         story.save(flush: true)
@@ -87,7 +89,6 @@ class StoryService extends IceScrumEventPublisher {
         publishSynchronousEvent(IceScrumEventType.CREATE, story)
     }
 
-    // TODO replace stories by a single one and call the service in a loop in story controller
     @PreAuthorize('isAuthenticated() and !archivedProject(#stories[0].backlog)')
     void delete(Collection<Story> stories, newObject = null, reason = null) {
         def project = stories[0].backlog
@@ -117,14 +118,12 @@ class StoryService extends IceScrumEventPublisher {
             }
             resetRank(story)
             story.description = reason ?: null
-
             story.delete()
             if (!newObject) {
                 activityService.addActivity(project, springSecurityService.currentUser, Activity.CODE_DELETE, story.name)
             }
             project.removeFromStories(story)
             project.save(flush: true)
-            // Be careful, events may be pushed event if the delete fails because the flush didn't occur yet
             publishSynchronousEvent(IceScrumEventType.DELETE, story, dirtyProperties)
         }
     }
@@ -148,6 +147,8 @@ class StoryService extends IceScrumEventPublisher {
             }
             if (story.parentSprint && story.parentSprint.state == Sprint.STATE_WAIT) {
                 story.parentSprint.capacity = story.parentSprint.totalEffort
+                SprintService sprintService = (SprintService) grailsApplication.mainContext.getBean("sprintService")
+                sprintService.update(story.parentSprint, null, null, false, false)
             }
         } else if (props.containsKey('effort')) {
             if (story.state == Story.STATE_ESTIMATED) {
@@ -178,136 +179,172 @@ class StoryService extends IceScrumEventPublisher {
     }
 
     @PreAuthorize('(productOwner(#sprint.parentProject) or scrumMaster(#sprint.parentProject)) and !archivedProject(#sprint.parentProject)')
-    public void planMultiple(Sprint sprint, def stories) {
-        stories.sort { it.rank }.each {
-            plan(sprint, it)
-        }
+    void plan(Story story, Sprint sprint, Long newRank = null) {
+        plan([story], sprint, newRank)
     }
 
-    @PreAuthorize('(productOwner(#sprint.parentProject) or scrumMaster(#sprint.parentProject)) and !archivedProject(#sprint.parentProject)')
-    public void plan(Sprint sprint, Story story, Long newRank = null) {
-        if (story.dependsOn && (story.dependsOn.state < Story.STATE_PLANNED || story.dependsOn.parentSprint.startDate > sprint.startDate)) {
-            throw new BusinessException(code: 'is.story.error.dependsOn', args: [story.name, story.dependsOn.name])
+    @PreAuthorize('(productOwner(#newParentSprint.parentProject) or scrumMaster(#newParentSprint.parentProject)) and !archivedProject(#newParentSprint.parentProject)')
+    void plan(List<Story> stories, Sprint newParentSprint, Long newRank = null) {
+        if (!stories) {
+            return
         }
-        if (story.dependences) {
-            Story dependence = story.dependences.findAll { it.parentSprint }?.min { it.parentSprint.startDate }
-            if (dependence && sprint.startDate > dependence.parentSprint.startDate) {
-                throw new BusinessException(code: 'is.story.error.dependences', args: [story.name, dependence.name])
-            }
-        }
-        if (![Story.TYPE_USER_STORY, Story.TYPE_DEFECT, Story.TYPE_TECHNICAL_STORY].contains(story.type)) {
-            throw new BusinessException(code: 'is.story.error.plan.type')
-        }
-        if (sprint.state == Sprint.STATE_DONE) {
+        if (newParentSprint.state == Sprint.STATE_DONE) {
             throw new BusinessException(code: 'is.sprint.error.associate.done')
         }
-        if (story.state < Story.STATE_ESTIMATED) {
-            throw new BusinessException(code: 'is.sprint.error.associate.story.noEstimated', args: [sprint.parentProject.getStoryStateNames()[Story.STATE_ESTIMATED]])
-        }
-        if (story.state == Story.STATE_DONE) {
-            throw new BusinessException(code: 'is.sprint.error.associate.story.done', args: [sprint.parentProject.getStoryStateNames()[Story.STATE_DONE]])
-        }
-        if (story.parentSprint != null) {
-            unPlan(story, false)
-        } else {
-            resetRank(story)
-        }
-        User user = (User) springSecurityService.currentUser
-        sprint.addToStories(story)
-        if (sprint.state == Sprint.STATE_WAIT) {
-            sprint.capacity = sprint.totalEffort
-        }
-        story.parentSprint = sprint
-        if (sprint.state == Sprint.STATE_INPROGRESS) {
-            story.state = Story.STATE_INPROGRESS
-            story.inProgressDate = new Date()
-            if (!story.plannedDate) {
-                story.plannedDate = story.inProgressDate
+        Project project = (Project) stories[0].backlog
+        def oldParentSprint = stories[0].parentSprint
+        def newStoryList = newParentSprint.stories.sort { it.rank }
+        stories = stories.sort { it.rank }
+        stories.each { Story story ->
+            if (story.parentSprint?.id != oldParentSprint?.id) {
+                throw new BusinessException(text: 'Error, only stories from the same origin can be planned together')
             }
-            if (sprint.parentRelease.parentProject.preferences.autoCreateTaskOnEmptyStory && !story.tasks) {
-                def emptyTask = new Task(name: story.name, state: Task.STATE_WAIT, description: story.description, parentStory: story)
-                taskService.save(emptyTask, user)
+            if (story.dependsOn && (story.dependsOn.state < Story.STATE_PLANNED || story.dependsOn.parentSprint.startDate > newParentSprint.startDate)) {
+                throw new BusinessException(code: 'is.story.error.dependsOn', args: [story.name, story.dependsOn.name])
             }
-            clicheService.createOrUpdateDailyTasksCliche(sprint)
-        } else {
-            story.state = Story.STATE_PLANNED
-            story.plannedDate = new Date()
+            if (story.dependences) {
+                Story dependence = story.dependences.findAll { it.parentSprint }?.min { it.parentSprint.startDate }
+                if (dependence && newParentSprint.startDate > dependence.parentSprint.startDate) {
+                    throw new BusinessException(code: 'is.story.error.dependences', args: [story.name, dependence.name])
+                }
+            }
+            if (![Story.TYPE_USER_STORY, Story.TYPE_DEFECT, Story.TYPE_TECHNICAL_STORY].contains(story.type)) {
+                throw new BusinessException(code: 'is.story.error.plan.type')
+            }
+            if (story.state < Story.STATE_ESTIMATED) {
+                throw new BusinessException(code: 'is.sprint.error.associate.story.noEstimated', args: [newParentSprint.parentProject.getStoryStateNames()[Story.STATE_ESTIMATED]])
+            }
+            if (story.state == Story.STATE_DONE) {
+                throw new BusinessException(code: 'is.sprint.error.associate.story.done', args: [newParentSprint.parentProject.getStoryStateNames()[Story.STATE_DONE]])
+            }
+            if (oldParentSprint) {
+                unPlan(story, false)
+            }
+            User user = (User) springSecurityService.currentUser
+            newParentSprint.addToStories(story)
+            story.parentSprint = newParentSprint
+            if (newParentSprint.state == Sprint.STATE_INPROGRESS) {
+                story.state = Story.STATE_INPROGRESS
+                story.inProgressDate = new Date()
+                if (!story.plannedDate) {
+                    story.plannedDate = story.inProgressDate
+                }
+                if (newParentSprint.parentRelease.parentProject.preferences.autoCreateTaskOnEmptyStory && !story.tasks) {
+                    def emptyTask = new Task(name: story.name, state: Task.STATE_WAIT, description: story.description, parentStory: story)
+                    taskService.save(emptyTask, user)
+                }
+            } else {
+                story.state = Story.STATE_PLANNED
+                story.plannedDate = new Date()
+            }
+            update(story)
+            pushService.disablePushForThisThread()
+            story.tasks.findAll { it.state == Task.STATE_WAIT }.each { Task task ->
+                task.backlog = newParentSprint
+                taskService.update(task, user)
+            }
+            pushService.enablePushForThisThread()
         }
-        def maxRank = (sprint.stories?.findAll { it.state != Story.STATE_DONE }?.size() ?: 1)
-        def rank = (newRank && newRank <= maxRank) ? newRank : maxRank
-        setRank(story, rank)
-        update(story)
-        pushService.disablePushForThisThread()
-        story.tasks.findAll { it.state == Task.STATE_WAIT }.each { Task task ->
-            task.backlog = sprint
-            taskService.update(task, user)
+        if (!oldParentSprint) {
+            cleanRanks(Story.findAllByBacklogAndStateInList(project, [Story.STATE_ACCEPTED, Story.STATE_ESTIMATED]).sort { it.rank })
         }
-        pushService.enablePushForThisThread()
+        def maxRank = newStoryList.findAll { it.state < Story.STATE_DONE }.size() + 1
+        if (!newRank || newRank > maxRank) {
+            newRank = maxRank
+        }
+        stories.eachWithIndex { _story, index ->
+            def _newRank = adjustRankAccordingToDependences(_story, newRank + index, newStoryList)
+            newStoryList.add(_newRank.intValue() - 1, _story)
+        }
+        cleanRanks(newStoryList)
+        if (newParentSprint.state == Sprint.STATE_WAIT) {
+            newParentSprint.capacity = newParentSprint.totalEffort
+            SprintService sprintService = (SprintService) grailsApplication.mainContext.getBean("sprintService")
+            sprintService.update(newParentSprint, null, null, false, false)
+        } else if (newParentSprint.state == Sprint.STATE_INPROGRESS) {
+            clicheService.createOrUpdateDailyTasksCliche(newParentSprint)
+        }
     }
 
     @PreAuthorize('(productOwner(#story.backlog) or scrumMaster(#story.backlog)) and !archivedProject(#story.backlog)')
-    public void unPlan(Story story, Boolean fullUnPlan = true) {
-        def sprint = story.parentSprint
-        if (!sprint) {
+    void unPlan(Story story, Boolean fullUnPlan = true) {
+        unPlan([story], fullUnPlan)
+    }
+
+    @PreAuthorize('(productOwner(#stories[0].backlog) or scrumMaster(#stories[0].backlog)) and !archivedProject(#stories[0].backlog)')
+    void unPlan(List<Story> stories, Boolean fullUnPlan = true) {
+        if (!stories) {
+            return
+        }
+        Sprint parentSprint = stories[0].parentSprint
+        if (!parentSprint) {
             throw new BusinessException(code: 'is.story.error.not.planned')
         }
-        if (story.state == Story.STATE_DONE) {
-            throw new BusinessException(code: 'is.story.error.unplan.done')
-        }
-        if (fullUnPlan && story.dependences?.find { it.state > Story.STATE_ESTIMATED }) {
-            throw new BusinessException(code: 'is.story.error.dependences', args: [story.name, story.dependences.find { it.state > Story.STATE_ESTIMATED }.name])
-        }
-        resetRank(story)
-        sprint.removeFromStories(story)
-        if (sprint.state == Sprint.STATE_WAIT) {
-            sprint.capacity = sprint.totalEffort
-        }
-        story.parentSprint = null
-        story.inProgressDate = null
-        story.plannedDate = null
-        if (fullUnPlan) {
-            story.state = Story.STATE_ESTIMATED
-            setRank(story, 1)
-            update(story)
-        }
-        pushService.disablePushForThisThread()
-        story.tasks.each { Task task ->
-            if (task.state != Task.STATE_DONE) {
-                def props = task.state == Task.STATE_WAIT ? [:] : [state: Task.STATE_WAIT]
-                if (fullUnPlan) {
-                    task.backlog = null
-                }
-                if (props || fullUnPlan) {
-                    taskService.update(task, (User) springSecurityService.currentUser, false, props)
+        Project project = (Project) stories[0].backlog
+        def newStoryList = fullUnPlan ? Story.findAllByBacklogAndStateInList(project, [Story.STATE_ACCEPTED, Story.STATE_ESTIMATED]).sort { it.rank } : []
+        stories.sort { -it.rank }.each { Story story ->
+            if (parentSprint.id != story.parentSprint.id) {
+                throw new BusinessException(text: 'Error, only stories from the same origin can be unplanned together')
+            }
+            if (story.state == Story.STATE_DONE) {
+                throw new BusinessException(code: 'is.story.error.unplan.done')
+            }
+            if (fullUnPlan && story.dependences?.find { it.state > Story.STATE_ESTIMATED }) {
+                throw new BusinessException(code: 'is.story.error.dependences', args: [story.name, story.dependences.find { it.state > Story.STATE_ESTIMATED }.name])
+            }
+            parentSprint.removeFromStories(story)
+            story.parentSprint = null
+            story.inProgressDate = null
+            story.plannedDate = null
+            if (fullUnPlan) {
+                story.state = Story.STATE_ESTIMATED
+                update(story)
+            }
+            pushService.disablePushForThisThread()
+            story.tasks.each { Task task ->
+                if (task.state != Task.STATE_DONE) {
+                    def props = task.state == Task.STATE_WAIT ? [:] : [state: Task.STATE_WAIT]
+                    if (fullUnPlan) {
+                        task.backlog = null
+                    }
+                    if (props || fullUnPlan) {
+                        taskService.update(task, (User) springSecurityService.currentUser, false, props)
+                    }
                 }
             }
+            pushService.enablePushForThisThread()
         }
-        pushService.enablePushForThisThread()
+        cleanRanks(parentSprint.stories.sort { it.rank })
+        if (fullUnPlan) {
+            stories.sort { it.rank }.eachWithIndex { _story, index ->
+                def _newRank = adjustRankAccordingToDependences(_story, 1 + index, newStoryList)
+                newStoryList.add(_newRank.intValue() - 1, _story)
+            }
+            cleanRanks(newStoryList)
+        }
+        if (parentSprint.state == Sprint.STATE_WAIT) {
+            parentSprint.capacity = parentSprint.totalEffort
+            SprintService sprintService = (SprintService) grailsApplication.mainContext.getBean("sprintService")
+            sprintService.update(parentSprint, null, null, false, false)
+        }
     }
 
-    // TODO check rights
-    def unPlanAll(Collection<Sprint> sprintList, Integer sprintState = null) {
-        sprintList.sort { sprint1, sprint2 -> sprint2.orderNumber <=> sprint1.orderNumber }
-        def storiesUnPlanned = []
-        sprintList.each { sprint ->
-            if ((!sprintState) || (sprintState && sprint.state == sprintState)) {
+    def unPlanAll(Collection<Sprint> sprints, Integer sprintState = null) {
+        def unPlannedStories = []
+        sprints.sort { -it.orderNumber }.each { sprint ->
+            if (!sprintState || sprint.state == sprintState) {
                 def stories = sprint.stories.findAll { story ->
                     story.state != Story.STATE_DONE
-                }.sort { st1, st2 -> st2.rank <=> st1.rank }
-                stories.each {
-                    unPlan(it)
+                }.asList()
+                if (stories) {
+                    unPlan(stories)
+                    unPlannedStories.addAll(stories)
                 }
-                // Recalculate the sprint estimated velocity (capacite)
-                if (sprint.state == Sprint.STATE_WAIT) {
-                    sprint.capacity = (Double) sprint.stories?.sum { it.effort } ?: 0
-                }
-                storiesUnPlanned.addAll(stories)
             }
         }
-        return storiesUnPlanned
+        return unPlannedStories
     }
 
-    // TODO check rights
     def autoPlan(List<Sprint> sprints, Double plannedVelocity) {
         def nbPoints = 0
         int nbSprint = 0
@@ -315,10 +352,9 @@ class StoryService extends IceScrumEventPublisher {
         sprints = sprints.findAll { it.state == Sprint.STATE_WAIT }.sort { it.orderNumber }
         int maxSprint = sprints.size()
         // Get the list of stories that have been estimated
-        Collection<Story> itemsList = project.stories.findAll { story ->
-            story.state == Story.STATE_ESTIMATED && [Story.TYPE_USER_STORY, Story.TYPE_DEFECT, Story.TYPE_TECHNICAL_STORY].contains(story.type)
-        }.sort { it.rank }
+        Collection<Story> itemsList = Story.findAllByBacklogAndStateAndTypeInList(project, Story.STATE_ESTIMATED, [Story.TYPE_USER_STORY, Story.TYPE_DEFECT, Story.TYPE_TECHNICAL_STORY], [sort: 'rank'])
         Sprint currentSprint = null
+        def toBePlanned = [:]
         def plannedStories = []
         // Associate story in each sprint
         for (Story story : itemsList) {
@@ -340,73 +376,86 @@ class StoryService extends IceScrumEventPublisher {
                     if (nbSprint > maxSprint) {
                         break
                     }
-                    this.plan(currentSprint, story)
-                    plannedStories << story
+                    if (!toBePlanned[currentSprint]) {
+                        toBePlanned[currentSprint] = []
+                    }
+                    toBePlanned[currentSprint] << story
                     nbPoints += story.effort
 
                 } else {
                     break
                 }
             } else {
-                this.plan(currentSprint, story)
-                plannedStories << story
+                if (!toBePlanned[currentSprint]) {
+                    toBePlanned[currentSprint] = []
+                }
+                toBePlanned[currentSprint] << story
                 nbPoints += story.effort
             }
+        }
+        toBePlanned.each { k, v ->
+            plan(v, k)
+            plannedStories.addAll(v)
         }
         return plannedStories
     }
 
-    // TODO check rights
-    void setRank(Story story, Long rank) {
-        rank = adjustRankAccordingToDependences(story, rank)
-        def stories = story.sameBacklogStories
-        stories.findAll { it.rank >= rank }.each {
-            it.rank++
-            it.save()
-        }
-        story.rank = rank
-        cleanRanks(stories)
+    private void updateStoryRank(Story story, Integer newRank) {
+        def dirtyProperties = [rank: story.rank]
+        story.rank = newRank
+        story.save()
+        publishSynchronousEvent(IceScrumEventType.PARTIAL_UPDATE, story, dirtyProperties)
     }
 
-    // TODO check rights
-    private void cleanRanks(stories) {
-        stories.sort { it.rank }
-        int i = 0
-        def error = false
-        while (i < stories.size() && !error) {
-            error = stories[i].rank != (i + 1)
-            i++
+    void setRank(Story story, Long rank) {
+        def stories = story.sameBacklogStories
+        rank = adjustRankAccordingToDependences(story, rank, stories)
+        stories.each { _story ->
+            if (_story.rank >= rank) {
+                updateStoryRank(_story, _story.rank + 1)
+            }
         }
-        if (error) {
-            stories.eachWithIndex { story, ind ->
-                if (story.rank != ind + 1) {
-                    if (log.debugEnabled) {
-                        log.debug("story ${story.uid} as rank ${story.rank} but should have ${ind + 1} fixing!!")
-                    }
-                    story.rank = ind + 1
-                    story.save()
-                }
+        story.rank = rank
+        cleanWrongRanks(stories)
+    }
+
+    void cleanRanks(stories) {
+        stories.eachWithIndex { story, index ->
+            def expectedRank = index + 1
+            if (story.rank != expectedRank) {
+                updateStoryRank(story, expectedRank)
+            }
+        }
+    }
+
+    private void cleanWrongRanks(stories) {
+        stories.sort { it.rank }.eachWithIndex { story, index ->
+            def expectedRank = index + 1
+            if (story.rank != expectedRank) {
+                log.error("story ${story.uid} as rank ${story.rank} but should have ${expectedRank} fixing!!")
+                updateStoryRank(story, expectedRank)
             }
         }
     }
 
     void resetRank(Story story) {
-        story.sameBacklogStories.findAll { it.rank > story.rank }.each {
-            it.rank--
-            it.save()
+        def sameBacklogStories = story.sameBacklogStories
+        sameBacklogStories.each { _story ->
+            if (_story.rank > story.rank) {
+                updateStoryRank(_story, _story.rank - 1)
+            }
         }
     }
 
-    // TODO check rights
     private void updateRank(Story story, Long rank, Integer newState = null) {
-        rank = adjustRankAccordingToDependences(story, rank)
+        def stories = story.sameBacklogStories
+        rank = adjustRankAccordingToDependences(story, rank, stories)
         if ((story.dependsOn || story.dependences) && story.rank == rank) {
             return
         }
         if (story.state == Story.STATE_DONE && newState != Story.STATE_INPROGRESS) {
             throw new BusinessException(code: 'is.story.error.done', args: [((Project) story.backlog).getStoryStateNames()[Story.STATE_DONE]])
         }
-        def stories = story.sameBacklogStories
         if (story.state in [Story.STATE_INPROGRESS, Story.STATE_INREVIEW] && newState != Story.STATE_DONE) {
             def maxRankInProgress = stories.findAll { it.state != Story.STATE_DONE }.size()
             if (rank > maxRankInProgress) {
@@ -415,88 +464,103 @@ class StoryService extends IceScrumEventPublisher {
         }
         Range affectedRange = story.rank..rank
         int delta = affectedRange.isReverse() ? 1 : -1
-        stories.findAll { it != story && it.rank in affectedRange }.each {
-            it.rank += delta
-            it.save()
+        stories.each { _story ->
+            if (_story.id != story.id && _story.rank in affectedRange) {
+                updateStoryRank(_story, _story.rank + delta)
+            }
         }
         story.rank = rank
-        cleanRanks(stories)
+        cleanWrongRanks(stories)
     }
 
-    // TODO check rights
-    void shiftRankInList(List<Story> stories, Story story, Integer newIndex) {
-        def oldRank = story.rank
+    void shiftRankInList(Story story, List<Story> stories, Integer newIndex) {
+        stories = stories.sort { it.rank }
+        List<Integer> ranks = stories*.rank
         def oldIndex = stories.indexOf(story)
         stories.remove(oldIndex)
         stories.add(newIndex, story)
-        if (oldIndex > newIndex) {
-            for (int i = newIndex; i <= oldIndex; i++) {
-                def _story = stories.get(i)
-                def newRank = (i == oldIndex) ? oldRank : stories.get(i + 1).rank
-                if (newRank == adjustRankAccordingToDependences(_story, newRank)) {
-                    _story.rank = newRank
-                    def dirtyProperties = publishSynchronousEvent(IceScrumEventType.BEFORE_UPDATE, _story)
-                    _story.save()
-                    publishSynchronousEvent(IceScrumEventType.UPDATE, _story, dirtyProperties)
-                } else {
-                    throw new BusinessException(code: 'is.story.error.shift.rank.has.dependences', args: [_story.name])
-                }
+        (oldIndex..newIndex).each { index ->
+            def newRank = ranks[index]
+            def _story = stories[index]
+            if (newRank != adjustRankAccordingToDependences(_story, newRank, _story.sameBacklogStories)) {
+                throw new BusinessException(code: 'is.story.error.shift.rank.has.dependences', args: [_story.name])
             }
-        } else {
-            for (int i = newIndex; i >= oldIndex; i--) {
-                def _story = stories.get(i)
-                def newRank = (i == oldIndex) ? oldRank : stories.get(i - 1).rank
-                if (newRank == adjustRankAccordingToDependences(_story, newRank)) {
-                    _story.rank = newRank
-                    def dirtyProperties = publishSynchronousEvent(IceScrumEventType.BEFORE_UPDATE, _story)
-                    _story.save()
-                    publishSynchronousEvent(IceScrumEventType.UPDATE, _story, dirtyProperties)
-                } else {
-                    throw new BusinessException(code: 'is.story.error.shift.rank.has.dependences', args: [_story.name])
-                }
-            }
+            updateStoryRank(_story, newRank) // NO REAL UPDATE EVENT FOR THE CURRENT STORY...
         }
     }
 
     @PreAuthorize('productOwner(#story.backlog) and !archivedProject(#story.backlog)')
     def acceptToBacklog(Story story, Long newRank = null) {
-        Project project = (Project) story.backlog
-        if (story.state > Story.STATE_SUGGESTED) {
-            throw new BusinessException(code: 'is.story.error.not.state.suggested', args: [project.getStoryStateNames()[Story.STATE_SUGGESTED]])
-        }
-        if (story.dependsOn?.state == Story.STATE_SUGGESTED) {
-            throw new BusinessException(code: 'is.story.error.dependsOn', args: [story.name, story.dependsOn.name])
-        }
-        def rank = newRank ?: ((Story.countByBacklogAndStateInList(project, [Story.STATE_ACCEPTED, Story.STATE_ESTIMATED]) ?: 0) + 1) // Do it before resetRank to prevent flushing dirty ranks that need to be pushed
-        resetRank(story)
-        story.state = Story.STATE_ACCEPTED
-        story.acceptedDate = new Date()
-        if (project.preferences.noEstimation) {
-            story.estimatedDate = new Date()
-            story.effort = 1
-            story.state = Story.STATE_ESTIMATED
-        }
-        setRank(story, rank)
-        update(story)
+        acceptToBacklog([story], newRank)
     }
 
-    @PreAuthorize('productOwner(#story.backlog) and !archivedProject(#story.backlog)')
-    void returnToSandbox(Story story, Long newRank) {
-        if (!(story.state in [Story.STATE_ESTIMATED, Story.STATE_ACCEPTED])) {
-            def storyStatesByName = ((Project) story.backlog).getStoryStateNames()
-            throw new BusinessException(code: 'is.story.error.not.in.backlog', args: [storyStatesByName[Story.STATE_ACCEPTED], storyStatesByName[Story.STATE_ESTIMATED]])
+    @PreAuthorize('productOwner(#stories[0].backlog) and !archivedProject(#stories[0].backlog)')
+    def acceptToBacklog(List<Story> stories, Long newRank = null) {
+        Project project = (Project) stories[0].backlog
+        def newStoryList = Story.findAllByBacklogAndStateInList(project, [Story.STATE_ACCEPTED, Story.STATE_ESTIMATED]).sort { it.rank }
+        if (!newRank) {
+            newRank = newStoryList.size() + 1
         }
-        if (story.dependences?.find { it.state > Story.STATE_SUGGESTED }) {
-            throw new BusinessException(code: 'is.story.error.dependences', args: [story.name, story.dependences.find { it.state > Story.STATE_SUGGESTED }.name])
+        def oldStoryState = stories[0].state
+        stories = stories.sort { it.rank }
+        stories.each { Story story ->
+            if (story.state != oldStoryState) {
+                throw new BusinessException(text: 'Error, only stories from the same origin can be accepted together')
+            }
+            if (story.state > Story.STATE_SUGGESTED) {
+                throw new BusinessException(code: 'is.story.error.not.state.suggested', args: [project.getStoryStateNames()[Story.STATE_SUGGESTED]])
+            }
+            if (story.dependsOn?.state == Story.STATE_SUGGESTED) {
+                throw new BusinessException(code: 'is.story.error.dependsOn', args: [story.name, story.dependsOn.name])
+            }
+            story.state = Story.STATE_ACCEPTED
+            story.acceptedDate = new Date()
+            if (project.preferences.noEstimation) {
+                story.estimatedDate = new Date()
+                story.effort = 1
+                story.state = Story.STATE_ESTIMATED
+            }
+            update(story)
         }
-        resetRank(story)
-        story.state = Story.STATE_SUGGESTED
-        story.acceptedDate = null
-        story.estimatedDate = null
-        story.effort = null
-        def rank = newRank ?: 1
-        setRank(story, rank)
-        update(story)
+        if (oldStoryState == Story.STATE_SUGGESTED) {
+            cleanRanks(Story.findAllByBacklogAndState(project, Story.STATE_SUGGESTED).sort { it.rank })
+        }
+        stories.eachWithIndex { _story, index ->
+            def _newRank = adjustRankAccordingToDependences(_story, newRank + index, newStoryList)
+            newStoryList.add(_newRank.intValue() - 1, _story)
+        }
+        cleanRanks(newStoryList)
+    }
+
+    @PreAuthorize('productOwner(#stories[0].backlog) and !archivedProject(#stories[0].backlog)')
+    void returnToSandbox(List<Story> stories, Long newRank = null) {
+        Project project = (Project) stories[0].backlog
+        def newStoryList = Story.findAllByBacklogAndState(project, Story.STATE_SUGGESTED).sort { it.rank }
+        def oldStoryStates = [Story.STATE_ACCEPTED, Story.STATE_ESTIMATED]
+        stories = stories.sort { it.rank }
+        stories.each { Story story ->
+            if (!(story.state in oldStoryStates)) {
+                def storyStatesByName = project.getStoryStateNames()
+                throw new BusinessException(code: 'is.story.error.not.in.backlog', args: [storyStatesByName[Story.STATE_ACCEPTED], storyStatesByName[Story.STATE_ESTIMATED]])
+            }
+            if (story.dependences?.find { it.state > Story.STATE_SUGGESTED }) {
+                throw new BusinessException(code: 'is.story.error.dependences', args: [story.name, story.dependences.find { it.state > Story.STATE_SUGGESTED }.name])
+            }
+            story.state = Story.STATE_SUGGESTED
+            story.acceptedDate = null
+            story.estimatedDate = null
+            story.effort = null
+            update(story)
+        }
+        cleanRanks(Story.findAllByBacklogAndStateInList(project, oldStoryStates).sort { it.rank })
+        if (!newRank) {
+            newRank = 1
+        }
+        stories.eachWithIndex { _story, index ->
+            def _newRank = adjustRankAccordingToDependences(_story, newRank + index, newStoryList)
+            newStoryList.add(_newRank.intValue() - 1, _story)
+        }
+        cleanRanks(newStoryList)
     }
 
     @PreAuthorize('productOwner(#stories[0].backlog) and !archivedProject(#stories[0].backlog)')
@@ -607,31 +671,36 @@ class StoryService extends IceScrumEventPublisher {
 
     @PreAuthorize('(productOwner(#stories[0].backlog) or scrumMaster(#stories[0].backlog)) and !archivedProject(#stories[0].backlog)')
     void done(List<Story> stories) {
+        if (!stories) {
+            return
+        }
         Project project = (Project) stories[0].backlog
         def storyStateNames = project.getStoryStateNames()
-        stories.sort { it.rank }.each { story ->
-            if (story.parentSprint?.state != Sprint.STATE_INPROGRESS) {
-                throw new BusinessException(code: 'is.story.error.markAsDone.not.inProgress', args: [storyStateNames[Story.STATE_DONE]])
+        def parentSprint = stories[0].parentSprint
+        if (parentSprint?.state != Sprint.STATE_INPROGRESS) {
+            throw new BusinessException(code: 'is.story.error.markAsDone.not.inProgress', args: [storyStateNames[Story.STATE_DONE]])
+        }
+        User user = (User) springSecurityService.currentUser
+        stories = stories.sort { it.rank }
+        stories.each { story ->
+            if (parentSprint.id != story.parentSprint.id) {
+                throw new BusinessException(text: 'Error, only stories from the same origin can be done together')
             }
             if (story.state < Story.STATE_INPROGRESS || story.state >= Story.STATE_DONE) {
                 throw new BusinessException(code: 'is.story.error.workflow', args: [storyStateNames[Story.STATE_DONE], storyStateNames[story.state]])
             }
-            // Move story to last rank in sprint
-            updateRank(story, Story.countByParentSprint(story.parentSprint), Story.STATE_DONE)
             story.state = Story.STATE_DONE
             story.doneDate = new Date()
-            story.parentSprint.velocity += story.effort
             def dirtyProperties = publishSynchronousEvent(IceScrumEventType.BEFORE_UPDATE, story)
             story.save()
             publishSynchronousEvent(IceScrumEventType.UPDATE, story, dirtyProperties)
-            User user = (User) springSecurityService.currentUser
             pushService.disablePushForThisThread()
-            story.tasks?.findAll { it.state != Task.STATE_DONE }?.each { t ->
-                taskService.update(t, user, false, [state: Task.STATE_DONE])
+            story.tasks?.findAll { it.state != Task.STATE_DONE }?.each { Task task ->
+                taskService.update(task, user, false, [state: Task.STATE_DONE])
             }
             pushService.enablePushForThisThread()
             Feature feature = story.feature
-            if (feature && project.preferences.autoDoneFeature && !feature.stories.any { Story s -> s.state != Story.STATE_DONE } && feature.state != Feature.STATE_DONE) {
+            if (feature && feature.state != Feature.STATE_DONE && project.preferences.autoDoneFeature && Story.countByFeatureAndStateNotEqual(feature, Story.STATE_DONE) == 0) {
                 featureService.update(feature, [state: Feature.STATE_DONE])
             }
             story.acceptanceTests.each { AcceptanceTest acceptanceTest ->
@@ -641,38 +710,45 @@ class StoryService extends IceScrumEventPublisher {
                 }
             }
         }
-        if (stories) {
-            clicheService.createOrUpdateDailyTasksCliche(stories[0]?.parentSprint)
-        }
-    }
-
-    @PreAuthorize('productOwner(#story.backlog) and !archivedProject(#story.backlog)')
-    void unDone(Story story) {
-        unDone([story])
+        cleanRanks(parentSprint.stories.findAll { !stories*.id.contains(it.id) }.sort { it.rank } + stories)
+        parentSprint.velocity += stories.sum { it.effort }
+        SprintService sprintService = (SprintService) grailsApplication.mainContext.getBean("sprintService")
+        sprintService.update(parentSprint, null, null, false, false)
+        clicheService.createOrUpdateDailyTasksCliche(parentSprint)
     }
 
     @PreAuthorize('(productOwner(#stories[0].backlog) or scrumMaster(#stories[0].backlog)) and !archivedProject(#stories[0].backlog)')
     void unDone(List<Story> stories) {
+        if (!stories) {
+            return
+        }
         def storyStateNames = ((Project) stories[0].backlog).getStoryStateNames()
-        stories.sort { it.rank }.each { story ->
+        def parentSprint = stories[0].parentSprint
+        if (parentSprint.state != Sprint.STATE_INPROGRESS) {
+            throw new BusinessException(code: 'is.sprint.error.declareAsUnDone.state.not.inProgress')
+        }
+        stories = stories.sort { it.rank }
+        stories.each { story ->
+            if (parentSprint.id != story.parentSprint.id) {
+                throw new BusinessException(text: 'Error, only stories from the same origin can be undone together')
+            }
             if (story.state != Story.STATE_DONE) {
                 throw new BusinessException(code: 'is.story.error.workflow', args: [storyStateNames[Story.STATE_INPROGRESS], storyStateNames[story.state]])
             }
-            if (story.parentSprint.state != Sprint.STATE_INPROGRESS) {
-                throw new BusinessException(code: 'is.sprint.error.declareAsUnDone.state.not.inProgress')
-            }
-            updateRank(story, Story.countByParentSprintAndState(story.parentSprint, Story.STATE_INPROGRESS) + 1, Story.STATE_INPROGRESS) // Move story to last rank of in progress stories in sprint
             story.state = Story.STATE_INPROGRESS
             story.inProgressDate = new Date()
             story.doneDate = null
-            story.parentSprint.velocity -= story.effort
             def dirtyProperties = publishSynchronousEvent(IceScrumEventType.BEFORE_UPDATE, story)
             story.save()
             publishSynchronousEvent(IceScrumEventType.UPDATE, story, dirtyProperties)
         }
-        if (stories) {
-            clicheService.createOrUpdateDailyTasksCliche(stories[0]?.parentSprint)
-        }
+        def newStoryList = parentSprint.stories.findAll { !stories*.id.contains(it.id) }.sort { it.rank }
+        newStoryList.addAll(newStoryList.findAll { it.state != Story.STATE_DONE }.size(), stories)
+        cleanRanks(newStoryList)
+        parentSprint.velocity -= stories.sum { it.effort }
+        SprintService sprintService = (SprintService) grailsApplication.mainContext.getBean("sprintService")
+        sprintService.update(parentSprint, null, null, false, false)
+        clicheService.createOrUpdateDailyTasksCliche(parentSprint)
     }
 
     @PreAuthorize('inProject(#stories[0].backlog) and !archivedProject(#stories[0].backlog) and inProject(#project) and !archivedProject(#project)')
@@ -912,10 +988,9 @@ class StoryService extends IceScrumEventPublisher {
         story.actors = actorSet
     }
 
-    private static Long adjustRankAccordingToDependences(story, Long rank) {
-        def sameBacklogStories = story.sameBacklogStories
+    private static Long adjustRankAccordingToDependences(story, Long rank, List<Story> sameBacklogStories) {
         if (story.dependsOn && (story.dependsOn in sameBacklogStories) && rank <= story.dependsOn.rank) {
-            rank = story.dependsOn.rank + 1
+            rank = (sameBacklogStories.indexOf(story.dependsOn) + 1) + 1
         }
         if (story.dependences) {
             def highestPriorityRank = story.dependences.findAll { it.backlog.id == story.backlog.id }.intersect(sameBacklogStories)*.rank.min()

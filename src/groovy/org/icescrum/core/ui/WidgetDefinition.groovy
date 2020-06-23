@@ -30,8 +30,8 @@ class WidgetDefinition {
     private final log = LoggerFactory.getLogger(this.class.name)
 
     boolean disabled
-    boolean footer = false
     boolean settings = false
+    boolean hideSettings = false
     boolean allowRemove = true
     boolean allowDuplicate = true
 
@@ -58,13 +58,12 @@ class WidgetDefinition {
     Map options = [:]
     Map defaultSettings = [:]
 
-    WidgetDefinition(String id, String pluginName, boolean disabled) {
+    WidgetDefinition(String id, boolean disabled) {
         this.id = id
         this.disabled = disabled
-        this.pluginName = pluginName
     }
 
-    void i18n(int i18n) {
+    void i18n(String i18n) {
         this.i18n = i18n
     }
 
@@ -108,6 +107,10 @@ class WidgetDefinition {
         this.ngController = ngController
     }
 
+    void pluginName(String pluginName) {
+        this.pluginName = pluginName
+    }
+
     void templatePath(String templatePath) {
         this.templatePath = templatePath
     }
@@ -118,6 +121,10 @@ class WidgetDefinition {
 
     void allowDuplicate(boolean allowDuplicate) {
         this.allowDuplicate = allowDuplicate
+    }
+
+    void hideSettings(boolean hideSettings) {
+        this.hideSettings = hideSettings
     }
 
     void setupI18n() {

@@ -259,6 +259,7 @@ class ProjectService extends IceScrumEventPublisher {
                     autoCreateTaskOnEmptyStory: projectXml.preferences.autoCreateTaskOnEmptyStory.text().toBoolean(),
                     autoDoneStory: projectXml.preferences.autoDoneStory.text().toBoolean(),
                     autoDoneFeature: projectXml.preferences.autoDoneFeature.text() ? projectXml.preferences.autoDoneFeature.text().toBoolean() : false,
+                    autoInReviewStory: projectXml.preferences.autoInReviewStory.text() ? projectXml.preferences.autoInReviewStory.text().toBoolean() : false,
                     noEstimation: projectXml.preferences.noEstimation.text().toBoolean(),
                     limitUrgentTasks: projectXml.preferences.limitUrgentTasks.text().toInteger(),
                     estimatedSprintsDuration: projectXml.preferences.estimatedSprintsDuration.text().toInteger(),
@@ -573,7 +574,7 @@ class ProjectService extends IceScrumEventPublisher {
         project.allUsers.each { it.preferences.removeEmailsSettings(project.pkey) } // must be before unsecure to have POs
         widgetService.delete('project', project.id)
         windowService.delete('project', project.id)
-        Hook.findAllByWorkspaceIdAndWorkspaceType(project.id, 'project').each {
+        Hook.findAllByWorkspaceIdAndWorkspaceType(project.id, WorkspaceType.PROJECT).each {
             it.delete(flush: true)
         }
         project.invitedStakeHolders*.delete()

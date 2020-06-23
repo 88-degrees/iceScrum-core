@@ -64,9 +64,12 @@ public class JSONIceScrumDomainClassMarshaller extends DomainClassMarshaller {
         def config = propertiesMap."$configName"
         def requestConfig = getRequestConfig(configName)
 
+        def idValue = extractValue(value, domainClass.identifier)
+        def classValue = GrailsNameUtils.getShortName(domainClass.clazz.name)
+
         writer.object()
-        writer.key('class').value(GrailsNameUtils.getShortName(domainClass.clazz.name))
-        json.property('id', extractValue(value, domainClass.identifier))
+        writer.key('class').value(classValue)
+        json.property('id', idValue)
 
         List<GrailsDomainClassProperty> properties = domainClass.persistentProperties.toList()
         if (requestConfig?.excludeAll) {

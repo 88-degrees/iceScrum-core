@@ -59,13 +59,7 @@ class ReleaseService extends IceScrumEventPublisher {
     }
 
     @PreAuthorize('(productOwner(#release.parentProject) or scrumMaster(#release.parentProject)) and !archivedProject(#release.parentProject)')
-    void update(Release release, Date startDate = null, Date endDate = null, boolean checkIntegrity = true) {
-        if (checkIntegrity && release.state == Release.STATE_DONE) {
-            def illegalDirtyProperties = release.dirtyPropertyNames - ['name', 'vision']
-            if (illegalDirtyProperties) {
-                throw new BusinessException(code: 'is.release.error.update.state.done')
-            }
-        }
+    void update(Release release, Date startDate = null, Date endDate = null) {
         startDate = DateUtils.getMidnightDate(startDate ?: release.startDate)
         endDate = DateUtils.getMidnightDate(endDate ?: release.endDate)
         def nextRelease = release.nextRelease
@@ -106,6 +100,9 @@ class ReleaseService extends IceScrumEventPublisher {
         }
         if (startDate != DateUtils.getMidnightDate(release.startDate)) {
             release.startDate = startDate
+            if (release.orderNumber == 1 && release.parentProject.startDate > startDate) {
+                release.parentProject.startDate = startDate
+            }
         }
         if (endDate != DateUtils.getMidnightDate(release.endDate)) {
             release.endDate = endDate
@@ -120,16 +117,11 @@ class ReleaseService extends IceScrumEventPublisher {
 
     @PreAuthorize('(productOwner(#release.parentProject) or scrumMaster(#release.parentProject)) and !archivedProject(#release.parentProject)')
     void activate(Release release) {
-        if (release.state != Release.STATE_WAIT) {
-            throw new BusinessException(code: 'is.release.error.not.state.wait')
+        if (!release.activable) {
+            throw new BusinessException(code: 'is.release.error.activate')
         }
-        def project = release.parentProject
-        if (project.releases.find { it.state == Release.STATE_INPROGRESS }) {
-            throw new BusinessException(code: 'is.release.error.already.active')
-        }
-        def lastRelease = project.releases.findAll { it.state == Release.STATE_DONE }.max { it.orderNumber }
-        if (lastRelease.orderNumber + 1 != release.orderNumber) {
-            throw new BusinessException(code: 'is.release.error.not.next')
+        if (release.previousRelease?.closable) {
+            close(release.previousRelease)
         }
         release.inProgressDate = new Date()
         release.state = Release.STATE_INPROGRESS
@@ -139,7 +131,7 @@ class ReleaseService extends IceScrumEventPublisher {
     @PreAuthorize('(productOwner(#release.parentProject) or scrumMaster(#release.parentProject)) and !archivedProject(#release.parentProject)')
     void reactivate(Release release) {
         if (!release.reactivable || release.parentProject.releases.find { it.state == Release.STATE_INPROGRESS }) {
-            throw new BusinessException(code: 'is.release.error.not.reactivable')
+            throw new BusinessException(code: 'is.release.error.reactivate')
         }
         release.state = Release.STATE_INPROGRESS
         release.doneDate = null
@@ -148,13 +140,13 @@ class ReleaseService extends IceScrumEventPublisher {
 
     @PreAuthorize('(productOwner(#release.parentProject) or scrumMaster(#release.parentProject)) and !archivedProject(#release.parentProject)')
     void close(Release release) {
-        if (release.state != Release.STATE_INPROGRESS) {
-            throw new BusinessException(code: 'is.release.error.not.state.wait')
+        if (!release.closable) {
+            throw new BusinessException(code: 'is.release.error.close')
         }
         release.doneDate = new Date()
         release.state = Release.STATE_DONE
         def lastSprintEndDate = release.sprints ? release.sprints.asList().last().endDate : new Date()
-        update(release, null, lastSprintEndDate, false)
+        update(release, null, lastSprintEndDate)
     }
 
     @PreAuthorize('(productOwner(#release.parentProject) or scrumMaster(#release.parentProject)) and !archivedProject(#release.parentProject)')

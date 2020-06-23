@@ -78,15 +78,21 @@ class DummyService {
         sprintService.generateSprints(release1)
         // Features
         def features = []
-        [
+        def featureProperties = [
                 [name: 'Administration', value: 2, description: 'Administrate and moderate content created by the users'],
                 [name: 'Pet profile', value: 4, description: 'Manage the profile of a pet', color: '#d0021b'],
                 [name: 'Advertising', value: 3, description: 'Advertise projects related to the profile of pets', color: '#bd10e0'],
                 [name: 'Search', value: 4, description: 'Search other pets to find the best match', color: '#50e3c2']
-        ].each { featureProperties ->
-            Feature feature = new Feature(featureProperties)
-            featureService.save(feature, project)
-            features << feature
+        ]
+        (largeDummyze ? 20 : 1).times { time ->
+            featureProperties.each {
+                Feature feature = new Feature(it)
+                if (time != 0) {
+                    feature.name = time + ' - ' + feature.name
+                }
+                featureService.save(feature, project)
+                features << feature
+            }
         }
         def featureAdmin = features[0]
         def featurePetProfile = features[1]
@@ -106,15 +112,14 @@ class DummyService {
                 [name: 'Batch delete pet profiles', description: '', feature: featureAdmin, value: 1, type: Story.TYPE_USER_STORY, state: Story.STATE_SUGGESTED],
                 [name: 'Search by behavior', description: '', feature: featureSearch, type: Story.TYPE_USER_STORY, state: Story.STATE_SUGGESTED]
         ]
-        def backlogStoryProperties = []
-        100.times {
-            backlogStoryProperties << [name: 'Add videos to my pet profile', description: "As a $petOwnerTag\nI can add videos to my pet profile \nIn order show how it is gorgeous to the other pet owners and make them choose it", feature: featurePetProfile, value: 3, type: Story.TYPE_USER_STORY, effort: 3, state: Story.STATE_ESTIMATED]
-            backlogStoryProperties << [name: 'Resizing the pet profile breaks the styling', description: 'In IE and Firefox, resizing the window under 400px width causes an overlap of fields', feature: featurePetProfile, value: 3, type: Story.TYPE_DEFECT, affectedVersion: '0.1', effort: 5, state: Story.STATE_ESTIMATED]
-            backlogStoryProperties << [name: 'Delete profiles', description: "As an $administratorTag\nI can delete profile\nIn order to remove unwanted content", feature: featureAdmin, value: 2, type: Story.TYPE_USER_STORY, effort: 1, state: Story.STATE_ESTIMATED]
-            backlogStoryProperties << [name: 'Geographical search', description: '', feature: featureSearch, value: 2, type: Story.TYPE_USER_STORY, state: Story.STATE_ACCEPTED]
-            backlogStoryProperties << [name: 'Metrics & reports', description: '', feature: featureAdmin, value: 3, type: Story.TYPE_USER_STORY, state: Story.STATE_ACCEPTED]
-            backlogStoryProperties << [name: 'Search by physical characteristics', description: '', feature: featureSearch, type: Story.TYPE_USER_STORY, state: Story.STATE_ACCEPTED]
-        }
+        def backlogStoryProperties = [
+                [name: 'Add videos to my pet profile', description: "As a $petOwnerTag\nI can add videos to my pet profile \nIn order show how it is gorgeous to the other pet owners and make them choose it", feature: featurePetProfile, value: 3, type: Story.TYPE_USER_STORY, effort: 3, state: Story.STATE_ESTIMATED],
+                [name: 'Resizing the pet profile breaks the styling', description: 'In IE and Firefox, resizing the window under 400px width causes an overlap of fields', feature: featurePetProfile, value: 3, type: Story.TYPE_DEFECT, affectedVersion: '0.1', effort: 5, state: Story.STATE_ESTIMATED],
+                [name: 'Delete profiles', description: "As an $administratorTag\nI can delete profile\nIn order to remove unwanted content", feature: featureAdmin, value: 2, type: Story.TYPE_USER_STORY, effort: 1, state: Story.STATE_ESTIMATED],
+                [name: 'Geographical search', description: '', feature: featureSearch, value: 2, type: Story.TYPE_USER_STORY, state: Story.STATE_ACCEPTED],
+                [name: 'Metrics & reports', description: '', feature: featureAdmin, value: 3, type: Story.TYPE_USER_STORY, state: Story.STATE_ACCEPTED],
+                [name: 'Search by physical characteristics', description: '', feature: featureSearch, type: Story.TYPE_USER_STORY, state: Story.STATE_ACCEPTED]
+        ]
         def storyPropertiesBySprint = [
                 0: [
                         [name: 'Setup CI & SCM', description: 'Create projects on SCM and build it automatically after each commit', value: 5, type: Story.TYPE_TECHNICAL_STORY, effort: 5, state: Story.STATE_ESTIMATED],
@@ -156,17 +161,19 @@ class DummyService {
         storyPropertiesBySprint.each { sprintIndex, storyProperties ->
             storiesBySprint[sprintIndex] = storyProperties.collect { createStory(it) }
         }
-        if (largeDummyze) {
-            backlogStoryProperties.eachWithIndex { it, index ->
-                it.name = "$index - $it.name"
-                createStory(it)
-            }
-        } else {
-            backlogStoryProperties[0..5].each {
-                createStory(it)
+        def createStories = { Integer times, List<Map> storyProperties ->
+            times.times { time ->
+                storyProperties.each {
+                    def properties = it.clone()
+                    if (time != 0) {
+                        properties.name = time + ' - ' + properties.name
+                    }
+                    createStory(properties)
+                }
             }
         }
-        sandboxStoryProperties.each { createStory(it) } // Create sandbox stories after backlog ones to preserve "chronological" order
+        createStories(largeDummyze ? 100 : 1, backlogStoryProperties)
+        createStories(largeDummyze ? 100 : 1, sandboxStoryProperties) // Create sandbox stories after backlog ones to preserve "chronological" order
         project.save()
         sessionFactory.currentSession.flush()
         // Plan Stories
@@ -256,39 +263,41 @@ class DummyService {
             story.state = Story.STATE_DONE
             def user = ((int) story.id) % 2 == 0 ? members.first() : members.last()
             addStoryActivity(story, user, 'updateState', sprint.endDate, 'state', Story.STATE_INPROGRESS)
+            story.inProgressDate = sprint.startDate
+            story.inReviewDate = sprint.startDate + (((int) story.id) % 2 == 0 ? 7 : 11)
             story.doneDate = sprint.endDate
             story.save()
         }
         sprint.tasks.each { Task task ->
-            doneTask(task)
+            doneTask(task, sprint.startDate + 4, sprint.endDate - 3)
         }
     }
 
-    private void inProgressTask(Task task) {
+    private void inProgressTask(Task task, Date inProgressDate) {
         task.state = Task.STATE_BUSY
-        task.inProgressDate = new Date()
+        task.inProgressDate = inProgressDate
         task.save()
-        addTaskActivity(task, task.responsible, 'taskInprogress')
+        addTaskActivity(task, task.responsible, 'taskInprogress', task.inProgressDate)
     }
 
-    private void doneTask(Task task) {
+    private void doneTask(Task task, Date inProgressDate, Date doneDate) {
         task.state = Task.STATE_DONE
         if (!task.inProgressDate) {
-            task.inProgressDate = new Date()
+            task.inProgressDate = inProgressDate
         }
-        task.doneDate = new Date()
+        task.doneDate = doneDate
         task.estimation = 0
         task.save()
-        addTaskActivity(task, task.responsible, 'taskInprogress')
-        addTaskActivity(task, task.responsible, 'taskFinish')
+        addTaskActivity(task, task.responsible, 'taskInprogress', task.inProgressDate)
+        addTaskActivity(task, task.responsible, 'taskFinish', task.doneDate)
     }
 
     private void updateContentInProgressSprint(Sprint sprint) {
         sprint.tasks.eachWithIndex { task, index ->
             if (index % 5 == 0) {
-                doneTask(task)
+                doneTask(task, sprint.startDate, sprint.startDate + 4)
             } else if (index % 2 == 0) {
-                inProgressTask(task)
+                inProgressTask(task, new Date())
             }
         }
         def lastStory = sprint.stories.sort { it.rank }.last()
@@ -297,7 +306,9 @@ class DummyService {
         lastStory.doneDate = new Date()
         lastStory.save()
         lastStory.tasks.each { Task task ->
-            doneTask(task)
+            if (task.state != Task.STATE_DONE) {
+                doneTask(task, lastStory.doneDate - 1, lastStory.doneDate)
+            }
         }
         lastStory.parentSprint.velocity += lastStory.effort
         def rankTasks = { k, tasks ->
@@ -351,8 +362,8 @@ class DummyService {
         story.addToActivities(activity)
     }
 
-    private addTaskActivity(Task task, User poster, String code) {
-        def activity = new Activity(poster: poster, parentRef: task.id, parentType: 'task', code: code, label: task.name)
+    private addTaskActivity(Task task, User poster, String code, dateCreated) {
+        def activity = new Activity(poster: poster, parentRef: task.id, parentType: 'task', code: code, label: task.name, dateCreated: dateCreated)
         activity.save()
         task.addToActivities(activity)
     }

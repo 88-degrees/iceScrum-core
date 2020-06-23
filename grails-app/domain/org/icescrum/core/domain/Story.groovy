@@ -26,9 +26,12 @@
 package org.icescrum.core.domain
 
 import grails.util.Holders
+import groovy.time.TimeCategory
 import org.grails.comments.Comment
 import org.hibernate.ObjectNotFoundException
 import org.icescrum.core.domain.AcceptanceTest.AcceptanceTestState
+
+import java.sql.Timestamp
 
 class Story extends BacklogElement implements Cloneable, Serializable {
 
@@ -85,7 +88,9 @@ class Story extends BacklogElement implements Cloneable, Serializable {
     static mapping = {
         cache true
         table 'is_story'
-        tasks cascade: 'all', batchSize: 25
+        followers cache: true
+        voters cache: true
+        tasks cache: true, cascade: 'all', batchSize: 25
         dependences cache: true, sort: "state", order: "asc"
         acceptanceTests sort: 'rank', batchSize: 10, cache: true
         effort precision: 5, scale: 2
@@ -119,10 +124,10 @@ class Story extends BacklogElement implements Cloneable, Serializable {
         effort(nullable: true, validator: { newEffort, story -> newEffort == null || (newEffort >= 0 && newEffort < 1000) ?: 'invalid' })
         creator(nullable: true) // in case of a user deletion, the story can remain without owner
         dependsOn(nullable: true, validator: { newDependsOn, story ->
-            newDependsOn == null ||
-            newDependsOn.state >= story.state ||
-            newDependsOn.state == STATE_ACCEPTED && story.state == STATE_ESTIMATED ||
-            (newDependsOn.state in [STATE_INPROGRESS, STATE_INREVIEW]) && story.state == STATE_DONE
+            newDependsOn == null ||                                                                                   // I depend on nothing or I depend on
+            newDependsOn.state >= story.state ||                                                                      // - a story with higher or equal state
+            newDependsOn.state == STATE_ACCEPTED && story.state == STATE_ESTIMATED ||                                 // - a story with lower state but I am ESTIMATED and it is ACCEPTED (= in backlog)
+            (newDependsOn.state in [STATE_INPROGRESS, STATE_INREVIEW]) && story.state in [STATE_INREVIEW, STATE_DONE] // - a story with lower state but I am IN REVIEW or DONE and it is IN PROGRESS or IN REVIEW (= in sprint)
                     ?: 'invalid'
         })
         origin(nullable: true)
@@ -198,13 +203,11 @@ class Story extends BacklogElement implements Cloneable, Serializable {
             or {
                 if (story.state == Story.STATE_SUGGESTED) {
                     and {
-                        ge 'state', Story.STATE_SUGGESTED
-                        ne 'id', story.id
-                        if (story.dependences) {
-                            not {
-                                'in' 'id', story.dependences.collect { it.id }
-                            }
-                        }
+                        eq 'state', Story.STATE_SUGGESTED
+                        lt 'rank', story.rank
+                    }
+                    and {
+                        gt 'state', Story.STATE_SUGGESTED
                     }
                 } else if (story.state in [Story.STATE_ACCEPTED, Story.STATE_ESTIMATED]) {
                     and {
@@ -315,6 +318,90 @@ class Story extends BacklogElement implements Cloneable, Serializable {
                 AND commentLink.type = 'story' 
                 ORDER BY commentLink.comment.dateCreated DESC""", [projectId: projectId], [max: 10, offset: 0, cache: true, readOnly: true]
         )
+    }
+
+    static List<Map> storyDates(long projectId, Date storyMinDoneDate) {
+        def timestampToDate = { Timestamp timestamp ->
+            return timestamp ? new Date(timestamp.time) : null
+        }
+        return executeQuery(""" 
+            SELECT story.frozenDate, story.suggestedDate, story.acceptedDate, story.estimatedDate, story.plannedDate, story.inProgressDate, story.inReviewDate, story.doneDate
+            FROM Story story
+            WHERE story.backlog.id = :projectId
+            AND story.state = :storyStateDone
+            AND story.doneDate > :storyMinDoneDate""", [projectId: projectId, storyStateDone: STATE_DONE, storyMinDoneDate: storyMinDoneDate], [cache: true, readOnly: true]
+        ).collect { storyArray ->
+            return [
+                    (STATE_FROZEN)    : timestampToDate(storyArray[0]),
+                    (STATE_SUGGESTED) : timestampToDate(storyArray[1]),
+                    (STATE_ACCEPTED)  : timestampToDate(storyArray[2]),
+                    (STATE_ESTIMATED) : timestampToDate(storyArray[3]),
+                    (STATE_PLANNED)   : timestampToDate(storyArray[4]),
+                    (STATE_INPROGRESS): timestampToDate(storyArray[5]),
+                    (STATE_INREVIEW)  : timestampToDate(storyArray[6]),
+                    (STATE_DONE)      : timestampToDate(storyArray[7])
+            ]
+        }
+    }
+
+    static Integer throughput(long projectId) {
+        def releaseInProgressDate = executeQuery(""" 
+                SELECT release.inProgressDate
+                FROM Release release
+                WHERE release.parentProject.id = :projectId
+                AND release.state = :releaseStateInProgress""", [projectId: projectId, releaseStateInProgress: Release.STATE_INPROGRESS], [cache: true, readOnly: true]
+        )[0]
+        if (releaseInProgressDate) {
+            def today = new Date()
+            def nbTotalDays = today - new Date(releaseInProgressDate.time)
+            def nbMaxDays = 4 * 7 // Max 4 weeks (must be a just number of weeks)
+            if (nbTotalDays > nbMaxDays) {
+                nbTotalDays = nbMaxDays
+            }
+            def storyMinDoneDate = today - nbTotalDays
+            def nbDoneStories = executeQuery(""" 
+                SELECT count(*)
+                FROM Story story
+                WHERE story.backlog.id = :projectId
+                AND story.state = :storyStateDone
+                AND story.doneDate > :storyMinDoneDate""", [projectId: projectId, storyStateDone: STATE_DONE, storyMinDoneDate: storyMinDoneDate], [cache: true, readOnly: true]
+            )[0]
+            return nbDoneStories ? Math.round(new BigDecimal(nbDoneStories) * 7 / nbTotalDays) : null
+        } else {
+            return null
+        }
+    }
+
+    static Integer meanCycleTime(long projectId, Date storyMinDoneDate) {
+        def timestampToDate = { Timestamp timestamp ->
+            return timestamp ? new Date(timestamp.time) : null
+        }
+        def dates = executeQuery(""" 
+                SELECT story.doneDate, min(task.inProgressDate)
+                FROM Story story
+                INNER JOIN story.tasks task
+                WHERE story.backlog.id = :projectId
+                AND story.state = :storyStateDone
+                AND story.doneDate > :storyMinDoneDate
+                GROUP BY story.id""", [projectId: projectId, storyStateDone: STATE_DONE, storyMinDoneDate: storyMinDoneDate], [cache: true, readOnly: true]
+        )
+        if (dates) {
+            BigDecimal mean = dates.collect { storyDate ->
+                new BigDecimal(TimeCategory.minus(timestampToDate(storyDate[0]), timestampToDate(storyDate[1])).days)
+            }.sum() / dates.size()
+            return Math.round(mean)
+        } else {
+            return null
+        }
+    }
+
+    static Date getLastDoneDate(long projectId) { // Cannot be done in subqueries, date arithmetics are not supported in HQL
+        def lastDoneDate = executeQuery(""" 
+            SELECT MAX(story.doneDate)
+            FROM Story story
+            WHERE story.backlog.id = :projectId""", [projectId: projectId], [cache: true, readOnly: true]
+        )[0]
+        return lastDoneDate ? new Date(lastDoneDate.time) : null
     }
 
     int compareTo(Story o) {

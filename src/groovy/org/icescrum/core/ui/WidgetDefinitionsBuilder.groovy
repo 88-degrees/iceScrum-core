@@ -46,18 +46,20 @@ class WidgetDefinitionsBuilder {
     def invokeMethod(String name, args) {
         if (args.size() == 1 && args[0] instanceof Closure) {
             def definitionClosure = args[0]
-            WidgetDefinition widgetDefinition = new WidgetDefinition(name, pluginName, disabled)
+            WidgetDefinition widgetDefinition = new WidgetDefinition(name, disabled)
             definitionClosure.delegate = widgetDefinition
             definitionClosure.resolveStrategy = Closure.DELEGATE_FIRST
             definitionClosure()
             if (widgetsDefinitionsById[name]) {
                 log.warn("UI widget definition for $name will be overriden")
             }
+            if (widgetDefinition.pluginName == null) {
+                widgetDefinition.pluginName = pluginName
+            }
             widgetDefinition.setupI18n()
             widgetDefinition.templateFolder = widgetDefinition.templateFolder ?: widgetDefinition.id
             widgetDefinition.templatePath = "/widgets/${widgetDefinition.templateFolder}/widget"
-            widgetDefinition.footer = groovyPageLocator.findTemplateByPath("/widgets/${widgetDefinition.templateFolder}/footer") ? true : false
-            widgetDefinition.settings = groovyPageLocator.findTemplateByPath("/widgets/${widgetDefinition.templateFolder}/settings") ? true : false
+            widgetDefinition.settings = widgetDefinition.hideSettings ? false : (groovyPageLocator.findTemplateByPath("/widgets/${widgetDefinition.templateFolder}/settings") ? true : false)
             widgetsDefinitionsById[name] = widgetDefinition
             if (log.debugEnabled) {
                 log.debug("Added new UI widget definition for $name and status is : ${disabled ? 'disabled' : 'enabled'}")

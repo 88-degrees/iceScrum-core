@@ -42,7 +42,9 @@ class Portfolio {
 
     static hasMany = [
             projects: Project,
-            widgets : Widget
+            features: Feature,
+            widgets : Widget,
+            meetings: Meeting
     ]
 
     static mapping = {
@@ -50,6 +52,8 @@ class Portfolio {
         table 'is_portfolio'
         description(length: 5000)
         widgets(sort: 'position')
+        meetings(sort: 'startDate')
+        features cascade: 'all-delete-orphan', sort: 'rank', batchSize: 25, cache: true
     }
 
     static constraints = {

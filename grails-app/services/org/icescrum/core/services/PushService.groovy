@@ -30,7 +30,9 @@ import org.atmosphere.cpr.AtmosphereResource
 import org.atmosphere.cpr.Broadcaster
 import org.icescrum.atmosphere.IceScrumAtmosphereEventListener
 import org.icescrum.atmosphere.IceScrumBroadcaster
+import org.icescrum.core.domain.Project
 import org.icescrum.core.domain.User
+import org.icescrum.core.domain.WorkspaceType
 import org.icescrum.core.event.IceScrumEventType
 
 import java.util.concurrent.ConcurrentHashMap
@@ -45,30 +47,63 @@ class PushService {
 
     private static final String BUFFER_MESSAGE_DELIMITER = "#-|-#"
 
-    void broadcastToProjectChannel(IceScrumEventType eventType, object, long projectId) {
-        broadcastToProjectChannel(getNamespaceFromDomain(object), eventType.name(), object, projectId)
+    private void internalBroadcastToWorkspaceChannel(String namespace, String eventType, object, long workspaceId, String workspaceType) {
+        broadcastToChannel(namespace, eventType, object, "/stream/app/$workspaceType-$workspaceId")
     }
 
-    void broadcastToProjectChannel(String namespace, String eventType, object, long projectId) {
-        def channel = '/stream/app/project-' + projectId
-        broadcastToChannel(namespace, eventType, object, channel)
+    private void internalBroadcastToWorkspaceChannel(IceScrumEventType eventType, object, long workspaceId, String workspaceType) {
+        internalBroadcastToWorkspaceChannel(getNamespaceFromDomain(object), eventType.name(), object, workspaceId, workspaceType)
+    }
+
+    void broadcastToProjectRelatedChannels(IceScrumEventType eventType, object, long projectId) {
+        internalBroadcastToWorkspaceChannel(eventType, object, projectId, WorkspaceType.PROJECT)
+        Long portfolioId = Project.get(projectId)?.portfolio?.id
+        if (portfolioId) {
+            internalBroadcastToWorkspaceChannel(eventType, object, portfolioId, WorkspaceType.PORTFOLIO)
+        }
+    }
+
+    void broadcastToProjectRelatedChannels(String namespace, String eventType, object, long projectId) {
+        internalBroadcastToWorkspaceChannel(namespace, eventType, object, projectId, WorkspaceType.PROJECT)
+        Long portfolioId = Project.get(projectId)?.portfolio?.id
+        if (portfolioId) {
+            internalBroadcastToWorkspaceChannel(namespace, eventType, object, portfolioId, WorkspaceType.PORTFOLIO)
+        }
+    }
+
+    void broadcastToPortfolioChannel(IceScrumEventType eventType, object, long portfolioId) {
+        internalBroadcastToWorkspaceChannel(eventType, object, portfolioId, WorkspaceType.PORTFOLIO)
+    }
+
+    void broadcastToPortfolioChannel(String namespace, String eventType, object, long portfolioId) {
+        internalBroadcastToWorkspaceChannel(namespace, eventType, object, portfolioId, WorkspaceType.PORTFOLIO)
+    }
+
+    // Utility method to use on objects that work on several workspace types
+    void broadcastToWorkspaceChannel(IceScrumEventType eventType, object, long workspaceId, String workspaceType) {
+        if (workspaceType == 'project') {
+            broadcastToProjectRelatedChannels(eventType, object, workspaceId)
+        } else if (workspaceType == 'portfolio') {
+            broadcastToPortfolioChannel(eventType, object, workspaceId)
+        }
     }
 
     void broadcastToChannel(String namespace, String eventType, object, String channel = '/stream/app/*') {
         if (!isDisabledPushThread()) {
+            def message = buildMessage(namespace, eventType, object)
             if (!isBufferedThread()) {
                 Broadcaster broadcaster = atmosphereMeteor.broadcasterFactory?.lookup(IceScrumBroadcaster.class, channel)
                 if (broadcaster) {
                     if (log.debugEnabled) {
                         log.debug("Broadcast to everybody on channel $channel - $namespace - $eventType")
                     }
-                    broadcaster.broadcast(buildMessage(namespace, eventType, object) as JSON)
+                    broadcaster.broadcast(message as JSON)
                 }
             } else {
-                if (log.debugEnabled) {
-                    log.debug("Buffered broadcast for channel $channel - $namespace - $eventType")
-                }
-                bufferMessage(channel, buildMessage(namespace, eventType, object))
+//                if (log.debugEnabled) {
+//                    log.debug("Buffered broadcast for channel $channel - $namespace - $eventType")
+//                }
+                bufferMessage(channel, message)
             }
         }
     }
@@ -114,9 +149,9 @@ class PushService {
         } else { //replace with new message but keep order of change in the request
             messages.remove(existingMessage)
             messages.add(message)
-            if (log.debugEnabled) {
-                log.debug('replace with latest content message (' + message.messageId + ') on channel ' + channel + ' ' + message.content)
-            }
+//            if (log.debugEnabled) {
+//                log.debug('replace with latest content message (' + message.messageId + ') on channel ' + channel)
+//            }
         }
     }
 

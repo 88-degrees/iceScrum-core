@@ -40,6 +40,7 @@ class SprintService extends IceScrumEventPublisher {
     def taskService
     def storyService
     def springSecurityService
+    def grailsApplication
 
     @PreAuthorize('(productOwner(#release.parentProject) or scrumMaster(#release.parentProject)) and !archivedProject(#release.parentProject)')
     void save(Sprint sprint, Release release) {
@@ -52,6 +53,7 @@ class SprintService extends IceScrumEventPublisher {
             throw new BusinessException(code: 'is.ui.timebox.error.dates')
         }
         sprint.save(flush: true)
+        sprint.refresh() // required to initialize collections to empty list
         publishSynchronousEvent(IceScrumEventType.CREATE, sprint)
     }
 
@@ -155,15 +157,12 @@ class SprintService extends IceScrumEventPublisher {
 
     @PreAuthorize('(productOwner(#sprint.parentRelease.parentProject) or scrumMaster(#sprint.parentRelease.parentProject)) and !archivedProject(#sprint.parentRelease.parentProject)')
     void activate(Sprint sprint) {
-        if (sprint.parentRelease.state != Release.STATE_INPROGRESS) {
-            throw new BusinessException(code: 'is.sprint.error.activate.release.not.inprogress')
+        if (!sprint.activable) {
+            throw new BusinessException(code: 'is.sprint.error.activate')
         }
-        sprint.parentRelease.sprints.each {
-            if (it.state == Sprint.STATE_INPROGRESS) {
-                throw new BusinessException(code: 'is.sprint.error.activate.other.inprogress')
-            } else if (it.orderNumber < sprint.orderNumber && it.state < Sprint.STATE_DONE) {
-                throw new BusinessException(code: 'is.sprint.error.activate.previous.not.closed')
-            }
+        if (sprint.parentRelease.state == Release.STATE_WAIT) {
+            ReleaseService releaseService = (ReleaseService) grailsApplication.mainContext.getBean('releaseService')
+            releaseService.activate(sprint.parentRelease)
         }
         def autoCreateTaskOnEmptyStory = sprint.parentRelease.parentProject.preferences.autoCreateTaskOnEmptyStory
         sprint.stories?.sort { it.rank }?.each { Story story ->
@@ -201,7 +200,6 @@ class SprintService extends IceScrumEventPublisher {
         }
         sprint.state = Sprint.STATE_INPROGRESS
         sprint.doneDate = null
-        sprint.velocity = 0d
         update(sprint)
         clicheService.removeLastSprintCliche(sprint.refresh())
         clicheService.createOrUpdateDailyTasksCliche(sprint)
@@ -219,10 +217,8 @@ class SprintService extends IceScrumEventPublisher {
                 task.state = Task.STATE_WAIT
                 taskService.update(task, springSecurityService.currentUser)
             }
-            def notDoneStories = sprint.stories.findAll { it.state != Story.STATE_DONE }.sort { -it.rank }
-            notDoneStories.each { notDoneStory ->
-                storyService.plan(nextSprint, notDoneStory, 1)
-            }
+            def notDoneStories = sprint.stories.findAll { it.state != Story.STATE_DONE }.asList()
+            storyService.plan(notDoneStories, nextSprint, 1)
         } else {
             sprint.tasks.findAll { it.type == Task.TYPE_URGENT && it.state != Task.STATE_DONE }?.each { Task task ->
                 taskService.update(task, springSecurityService.currentUser, false, [state: Task.STATE_DONE])

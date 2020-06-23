@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 Kagilum.
+ * Copyright (c) 2020 Kagilum.
  *
  * This file is part of iceScrum.
  *
@@ -21,15 +21,9 @@
  * Nicolas Noullet (nnoullet@kagilum.com)
  *
  */
-package org.icescrum.core.event
+package org.icescrum.core.domain
 
-enum IceScrumEventType {
-    UGLY_HACK_BECAUSE_ANNOTATION_CANT_BE_NULL,
-    BEFORE_CREATE,
-    CREATE,
-    BEFORE_UPDATE,
-    PARTIAL_UPDATE,
-    UPDATE,
-    BEFORE_DELETE,
-    DELETE
+class WorkspaceType {
+    static final String PROJECT = 'project'
+    static final String PORTFOLIO = 'portfolio'
 }

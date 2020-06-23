@@ -81,6 +81,10 @@ class UserService extends IceScrumEventPublisher {
         if (props.emailsSettings) {
             user.preferences.emailsSettings = props.emailsSettings
         }
+        if (props.iceScrumRating) {
+            user.preferences.iceScrumRating = props.iceScrumRating
+            user.preferences.lastIceScrumRating = new Date()
+        }
         try {
             if (props.avatar) {
                 def ext

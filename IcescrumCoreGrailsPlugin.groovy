@@ -27,11 +27,6 @@ import grails.converters.JSON
 import grails.plugin.springsecurity.SecurityFilterPosition
 import grails.plugin.springsecurity.SpringSecurityService
 import grails.plugin.springsecurity.SpringSecurityUtils
-import liquibase.util.file.FilenameUtils
-import net.sf.jasperreports.engine.JasperCompileManager
-import org.apache.commons.io.FileUtils
-import org.apache.commons.io.filefilter.RegexFileFilter
-import org.apache.commons.io.filefilter.TrueFileFilter
 import org.codehaus.groovy.grails.commons.ControllerArtefactHandler
 import org.codehaus.groovy.grails.commons.GrailsClassUtils
 import org.codehaus.groovy.grails.commons.ServiceArtefactHandler
@@ -46,6 +41,8 @@ import org.icescrum.core.cors.CorsFilter
 import org.icescrum.core.event.IceScrumEventPublisher
 import org.icescrum.core.event.IceScrumEventType
 import org.icescrum.core.event.IceScrumListener
+import org.icescrum.core.security.IceScrumRedirectStrategy
+import org.icescrum.core.security.IceScrumSimpleUrlLogoutSuccessHandler
 import org.icescrum.core.security.ScrumUserDetailsService
 import org.icescrum.core.security.rest.TokenAuthenticationFilter
 import org.icescrum.core.security.rest.TokenAuthenticationProvider
@@ -172,6 +169,19 @@ ERROR: iceScrum v7 has detected that you attempt to run it on an existing R6 ins
         SpringSecurityUtils.registerProvider 'tokenAuthenticationProvider'
         SpringSecurityUtils.registerFilter 'tokenAuthenticationFilter', SecurityFilterPosition.BASIC_AUTH_FILTER.order - 1
         SpringSecurityUtils.registerFilter 'restExceptionTranslationFilter', SecurityFilterPosition.EXCEPTION_TRANSLATION_FILTER.order + 1
+
+        redirectStrategy(IceScrumRedirectStrategy) {
+            useHeaderCheckChannelSecurity = SpringSecurityUtils.securityConfig.secureChannel.useHeaderCheckChannelSecurity // false
+            portResolver = ref('portResolver')
+        }
+
+        logoutSuccessHandler(IceScrumSimpleUrlLogoutSuccessHandler) {
+            redirectStrategy = ref('redirectStrategy')
+            defaultTargetUrl = SpringSecurityUtils.securityConfig.logout.afterLogoutUrl // '/'
+            alwaysUseDefaultTargetUrl = SpringSecurityUtils.securityConfig.logout.alwaysUseDefaultTargetUrl // false
+            targetUrlParameter = SpringSecurityUtils.securityConfig.logout.targetUrlParameter // null
+            useReferer = SpringSecurityUtils.securityConfig.logout.redirectToReferer // false
+        }
 
         webCacheKeyGenerator(IsControllerWebKeyGenerator)
     }

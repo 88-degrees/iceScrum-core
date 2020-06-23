@@ -30,6 +30,9 @@ import grails.util.GrailsNameUtils
 import grails.util.Holders
 import grails.util.Metadata
 import groovy.sql.Sql
+import groovyx.net.http.ContentType
+import groovyx.net.http.HTTPBuilder
+import groovyx.net.http.Method
 import org.apache.commons.lang.WordUtils
 import org.apache.commons.logging.LogFactory
 import org.apache.http.HttpHost
@@ -39,7 +42,9 @@ import org.apache.http.auth.AuthScope
 import org.apache.http.auth.UsernamePasswordCredentials
 import org.apache.http.client.AuthCache
 import org.apache.http.client.HttpClient
+import org.apache.http.client.methods.HttpDelete
 import org.apache.http.client.methods.HttpGet
+import org.apache.http.client.methods.HttpPatch
 import org.apache.http.client.methods.HttpPost
 import org.apache.http.client.protocol.ClientContext
 import org.apache.http.entity.StringEntity
@@ -87,7 +92,7 @@ class ApplicationSupport {
     public static final CONFIG_ENV_NAME = 'icescrum_config_location'
     private static mySQLUTF8mb4 = null // Only one check per app start
     private static final log = LogFactory.getLog(this)
-    protected static final FilterChain DUMMY_CHAIN = [
+    public static final FilterChain DUMMY_CHAIN = [
             doFilter: { req, res -> throw new UnsupportedOperationException() }
     ] as FilterChain
 
@@ -164,7 +169,7 @@ class ApplicationSupport {
             ]
         }
         if (!Holders.grailsApplication.config.publicSettings.beta.find { it.key == "icescrum.beta.${name}.enable".toString() }) {
-            Holders.grailsApplication.config.publicSettings.beta << [key: "icescrum.beta.${name}.enable".toString(), type: 'checkbox']
+            Holders.grailsApplication.config.publicSettings.beta << [key: "icescrum.beta.${name}.enable".toString(), betaKey: name, type: 'checkbox']
         }
         if (!(Holders.grailsApplication.config.icescrum.beta."${name}"?.enable instanceof Boolean)) {
             Holders.grailsApplication.config.icescrum.beta."${name}".enable = enabledByDefault
@@ -275,6 +280,11 @@ class ApplicationSupport {
         map
     }
 
+    static String getAttachmentPath(String workspaceType, Long workspaceId, String itemDirectory, Long itemId) {
+        List<String> parts = [(workspaceType == WorkspaceType.PORTFOLIO ? 'portfolio-' : '') + workspaceId, 'attachments', itemDirectory, itemId]
+        return File.separator + parts.join(File.separator) + File.separator
+    }
+
     static public mapToString = { Map map, String separatorK = "=", String separatorV = "," ->
         String st = ""
         map?.eachWithIndex { it, i ->
@@ -368,6 +378,10 @@ class ApplicationSupport {
             log.error "Error (exception) could not create file: ${filePath} please check directory & user permission"
             throw ioe
         }
+    }
+
+    static boolean isValidEmailAddress(String emailCandidate) {
+        return emailCandidate && emailCandidate.split('@').size() > 1 && emailCandidate.split('@')[1]
     }
 
     static zipExportFile(OutputStream zipStream, List<File> files, File xml, String subdir) throws IOException {
@@ -593,6 +607,109 @@ class ApplicationSupport {
         return resp
     }
 
+    static Map patchJSON(String url, String authenticationBearer, JSON json, headers = [:], params = [:]) {
+        headers.Authorization = "Bearer $authenticationBearer"
+        return patchJSON(url, null, null, json, headers, params)
+    }
+
+    static Map patchJSON(String url, String username, String password, JSON json, headers = [:], params = [:]) {
+        DefaultHttpClient httpClient = getHttpClient()
+        Map resp = [:]
+        try {
+            // Build host
+            URI uri = new URI(url)
+            String host = uri.host
+            Integer port = uri.port
+            String scheme = uri.scheme
+            if (port == -1 && scheme == 'https') {
+                port = 443
+            }
+            HttpHost targetHost = new HttpHost(host, port, scheme)
+            // Configure basic auth
+            BasicHttpContext localcontext = null
+            if (!headers.Authorization && username && password) {
+                httpClient.credentialsProvider.setCredentials(new AuthScope(targetHost.hostName, targetHost.port), new UsernamePasswordCredentials(username, password))
+                AuthCache authCache = new BasicAuthCache()
+                authCache.put(targetHost, new BasicScheme())
+                localcontext = new BasicHttpContext()
+                localcontext.setAttribute(ClientContext.AUTH_CACHE, authCache)
+            }
+            // Build request
+            HttpPatch httpPatch = new HttpPatch(uri.path)
+            headers.each { k, v ->
+                httpPatch.setHeader(k, v)
+            }
+            params.each { k, v ->
+                httpPatch.params.setParameter(k, v)
+            }
+            httpPatch.setEntity(new StringEntity(json.toString()))
+            // Execute request
+            HttpResponse response = localcontext ? httpClient.execute(targetHost, httpPatch, localcontext) : httpClient.execute(targetHost, httpPatch)
+            // Gather results
+            resp.status = response.statusLine.statusCode
+            if (resp.status != HttpStatus.SC_NO_CONTENT && log.debugEnabled) {
+                log.debug('Error ' + resp.status + ' patch ' + uri.toString())
+            }
+        } catch (Exception e) {
+            log.error(e.message)
+            e.printStackTrace()
+        } finally {
+            httpClient.connectionManager.shutdown()
+        }
+        return resp
+    }
+
+    static Map delete(String url, String authenticationBearer, headers = [:], params = [:]) {
+        headers.Authorization = "Bearer $authenticationBearer"
+        return delete(url, null, null, headers, params)
+    }
+
+    static Map delete(String url, String username, String password, headers = [:], params = [:]) {
+        DefaultHttpClient httpClient = getHttpClient()
+        Map resp = [:]
+        try {
+            // Build host
+            URI uri = new URI(url)
+            String host = uri.host
+            Integer port = uri.port
+            String scheme = uri.scheme
+            if (port == -1 && scheme == 'https') {
+                port = 443
+            }
+            HttpHost targetHost = new HttpHost(host, port, scheme)
+            // Configure basic auth
+            BasicHttpContext localcontext = null
+            if (!headers.Authorization && username && password) {
+                httpClient.credentialsProvider.setCredentials(new AuthScope(targetHost.hostName, targetHost.port), new UsernamePasswordCredentials(username, password))
+                AuthCache authCache = new BasicAuthCache()
+                authCache.put(targetHost, new BasicScheme())
+                localcontext = new BasicHttpContext()
+                localcontext.setAttribute(ClientContext.AUTH_CACHE, authCache)
+            }
+            // Build request
+            HttpDelete httpDelete = new HttpDelete(uri.path)
+            headers.each { k, v ->
+                httpDelete.setHeader(k, v)
+            }
+            params.each { k, v ->
+                httpDelete.params.setParameter(k, v)
+            }
+            // Execute request
+            HttpResponse response = localcontext ? httpClient.execute(targetHost, httpDelete, localcontext) : httpClient.execute(targetHost, httpDelete)
+            // Gather results
+            resp.status = response.statusLine.statusCode
+            if (resp.status != HttpStatus.SC_NO_CONTENT && log.debugEnabled) {
+                log.debug('Error ' + resp.status + ' delete ' + uri.toString())
+            }
+        } catch (Exception e) {
+            log.error(e.message)
+            e.printStackTrace()
+        } finally {
+            httpClient.connectionManager.shutdown()
+        }
+        return resp
+    }
+
     static void exportProjectZIP(Project project, outputStream) {
         def attachmentableService = Holders.applicationContext.getBean("attachmentableService")
         def projectName = "${project.name.replaceAll("[^a-zA-Z\\s]", "").replaceAll(" ", "")}-${new Date().format('yyyy-MM-dd')}"
@@ -611,6 +728,7 @@ class ApplicationSupport {
             project.sprints*.attachments.findAll { it.size() > 0 }?.each { it?.each { att -> files << attachmentableService.getFile(att) } }
             project.attachments.each { it?.each { att -> files << attachmentableService.getFile(att) } }
             def tasks = []
+            project.stories.findAll { it.state < Story.STATE_PLANNED && it.tasks.size() > 0 }*.tasks*.each { tasks.addAll(it) }
             project.releases*.each { it.sprints*.each { s -> tasks.addAll(s.tasks) } }
             tasks*.attachments.findAll { it.size() > 0 }?.each {
                 it?.each { att -> files << attachmentableService.getFile(att) }
@@ -795,6 +913,10 @@ class ApplicationSupport {
         return path
     }
 
+    static String getReleaseNotesLink() {
+        return 'https://www.icescrum.com/blog/icescrum-v' + Metadata.current['app.version'].replaceAll('Pro', '').replaceAll('\\.', '-')
+    }
+
     static checkVersion() {
         def config = Holders.grailsApplication.config.icescrum.check
         def serverID = Holders.grailsApplication.config.icescrum.appID
@@ -847,6 +969,95 @@ class ApplicationSupport {
             throw new SignatureException("Failed to generate HMAC : " + e.getMessage())
         }
         return result
+    }
+
+    static getAttachmentableObject(def params) {
+        def attachmentable
+        long workspace = params.long('workspace')
+        long attachmentableId = params.long('attachmentable')
+        switch (params.type) {
+            case 'story':
+                attachmentable = Story.getInProject(workspace, attachmentableId).list()
+                break
+            case 'task':
+                attachmentable = Task.getInProject(workspace, attachmentableId)
+                break
+            case 'feature':
+                attachmentable = Feature.withFeature(workspace, attachmentableId, params.workspaceType)
+                break
+            case 'release':
+                attachmentable = Release.getInProject(workspace, attachmentableId).list()
+                break
+            case 'sprint':
+                attachmentable = Sprint.getInProject(workspace, attachmentableId).list()
+                break
+            case 'project':
+                attachmentable = Project.get(attachmentableId)
+                break
+            default:
+                attachmentable = null
+        }
+        attachmentable
+    }
+
+    static getMetaFromPage(String url, def extraAttributes = [], boolean ignoreSsl = false) {
+        def data = [:]
+        def http = new HTTPBuilder(url)
+        if (ignoreSsl) {
+            http.ignoreSSLIssues()
+        }
+        http.getClient().getParams().setParameter("http.connection.timeout", 5000)
+        http.getClient().getParams().setParameter("http.socket.timeout", 5000)
+        try {
+            http.request(Method.GET, ContentType.HTML) {
+                headers.'User-Agent' = "Mozilla/5.0 Firefox/3.0.4"
+                response.success = { resp, html ->
+                    def metaData = html.HEAD.META
+                    def metas = [:]
+                    metaData.depthFirst().each { tag ->
+                        tag.each {
+                            def meta = it.attributes()
+                            metas[meta.property ?: meta.name] = meta.content
+                        }
+                    }
+                    if (metas['og:title']) {
+                        data.title = metas['og:title']
+                    } else if (metas.title) {
+                        data.title = metas.title
+                    } else {
+                        data.title = html.HEAD.TITLE ? html.HEAD.TITLE.text() : 'Document'
+                    }
+                    if (metas['og:url']) {
+                        data.url = metas['og:url']
+                    }
+                    if (metas['og:type']) {
+                        data.type = metas['og:type']
+                    }
+                    if (metas['og:image']) {
+                        data.image = metas['og:image']
+                    }
+                    if (metas['og:description']) {
+                        data.description = metas['og:description']
+                    } else if (metas.description) {
+                        data.description = metas.description
+                    }
+                    if (metas['og:site_name']) {
+                        data.site_name = metas['og:site_name']
+                    }
+                    extraAttributes.each { extraAttribute ->
+                        if (metas[extraAttribute]) {
+                            data[extraAttribute] = metas[extraAttribute]
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            if (log.debugEnabled) {
+                log.debug(e.message)
+                e.printStackTrace()
+            }
+        }
+        return data
     }
 }
 
